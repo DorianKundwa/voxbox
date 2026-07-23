@@ -6,10 +6,15 @@ Extracts a comprehensive set of vocal features for AI chain matching.
 import numpy as np
 import librosa
 import scipy.signal as signal
+import scipy.signal.windows as windows
+if not hasattr(signal, "hann"):
+    signal.hann = windows.hann
+
 import pyloudnorm as pyln
 from typing import Dict, Any
 import warnings
 warnings.filterwarnings("ignore")
+
 
 
 def extract_features(path: str) -> Dict[str, Any]:
@@ -117,8 +122,11 @@ def extract_features(path: str) -> Dict[str, Any]:
     stereo_width = 0.0  # Extended in stereo version
 
     # ── BPM / Tempo ──────────────────────────────────────────────────────────
-    tempo, _ = librosa.beat.beat_track(y=y_trimmed, sr=sr)
-    bpm = float(tempo[0]) if hasattr(tempo, "__len__") else float(tempo)
+    try:
+        tempo, _ = librosa.beat.beat_track(y=y_trimmed, sr=sr)
+        bpm = float(tempo[0]) if hasattr(tempo, "__len__") else float(tempo)
+    except Exception:
+        bpm = 120.0
 
     # ── Key / Scale ──────────────────────────────────────────────────────────
     chroma = librosa.feature.chroma_cqt(y=harmonic, sr=sr)
