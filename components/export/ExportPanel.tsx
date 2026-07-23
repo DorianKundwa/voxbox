@@ -365,7 +365,7 @@ export function ExportPanel() {
         case "txt":  downloadFile(chainToTXT(modules, reasoning), `${base}.txt`, "text/plain"); break;
         case "csv":  downloadFile(chainToCSV(modules), `${base}.csv`, "text/csv"); break;
         case "pdf":  await exportPDF(modules, reasoning); break;
-        case "mp3":  await exportMP3(); break;
+        case "mp3":  await exportMP3(modules); break;
       }
     } finally {
       setExporting(null);
