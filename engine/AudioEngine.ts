@@ -132,14 +132,14 @@ export class AudioEngine {
   private async _loadPitchWorklet(): Promise<void> {
     if (!this.ctx) return;
     try {
-      await this.ctx.audioWorklet.addModule("/dsp/pitch-processor.js");
-      const node = new AudioWorkletNode(this.ctx, "pitch-shift-processor");
+      await this.ctx.audioWorklet.addModule("/dsp/wasm-pitch-processor.js");
+      const node = new AudioWorkletNode(this.ctx, "wasm-pitch-processor");
 
       // Remove bypass path: deEsser --[pitchBypass]--> EQ[0]
       this.pitchBypass.disconnect();            // pitchBypass → EQ[0]
       this.deEsserFilter.disconnect();          // deEsser → pitchBypass
 
-      // Insert worklet: deEsser → pitchShiftNode → EQ[0]
+      // Insert WASM Pitch worklet: deEsser → pitchShiftNode → EQ[0]
       this.deEsserFilter.connect(node);
       node.connect(this.eqFilters[0]);
       this.pitchShiftNode = node;

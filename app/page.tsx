@@ -11,6 +11,7 @@ import { ABMonitor } from "@/components/monitor/ABMonitor";
 import { LUFSMeter } from "@/components/monitor/LUFSMeter";
 import { PitchDisplay } from "@/components/monitor/PitchDisplay";
 import { ExportPanel } from "@/components/export/ExportPanel";
+import { MultiTrackRack } from "@/components/multitrack/MultiTrackRack";
 import { ChainSync } from "@/components/chain/ChainSync";
 import { useAudioStore } from "@/store/audioStore";
 import { useChainStore } from "@/store/chainStore";
@@ -401,6 +402,11 @@ export default function VoxBoxPage() {
               Mappings are saved to your browser.
             </div>
           </div>
+        </div>
+
+        {/* ── Row 4: Multi-Track Vocal Stems Processor ────────────────── */}
+        <div style={{ marginTop: 12 }}>
+          <MultiTrackRack />
         </div>
       </div>
 
