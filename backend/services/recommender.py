@@ -1,0 +1,333 @@
+"""
+Rule-based vocal chain recommender.
+Maps feature deltas between reference and dry vocals to effect chain parameters.
+Phase 1: Pure rule-based. Phase 3 will replace with ML model.
+"""
+
+from typing import Dict, Any
+import math
+
+
+def recommend_chain(
+    ref: Dict[str, Any],
+    dry: Dict[str, Any],
+    mode: str = "adapt"
+) -> Dict[str, Any]:
+    """
+    Compare reference and dry features, return recommended chain parameters.
+    mode: "exact" = try to match reference exactly
+          "adapt" = use reference as inspiration, compensate for dry's character
+    """
+
+    # ── Compute Deltas ───────────────────────────────────────────────────────
+    def d(key, default=0.0):
+        """ref value minus dry value for a given feature key."""
+        return ref.get(key, default) - dry.get(key, default)
+
+    def ref_val(key, default=0.0):
+        return ref.get(key, default)
+
+    def dry_val(key, default=0.0):
+        return dry.get(key, default)
+
+    lufs_diff = d("lufs")
+    dynamic_diff = d("dynamic_range")      # positive = ref is more dynamic
+    centroid_diff = d("spectral_centroid")  # positive = ref is brighter
+    sibilance_diff = d("sibilance")
+    reverb_diff = d("reverb_tail")
+    harmonic_diff = d("harmonic_ratio")
+    compression_diff = d("compression_amount")
+    saturation_diff = d("saturation_amount")
+    noise_floor_dry = dry_val("noise_floor", -60)
+    pitch_var_dry = dry_val("pitch_variance", 0)
+    freq_ref = ref.get("freq_balance", {})
+    freq_dry = dry.get("freq_balance", {})
+
+    # ── Helper ───────────────────────────────────────────────────────────────
+    def clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
+    def lerp(a, b, t):
+        return a + (b - a) * clamp(t, 0, 1)
+
+    # Adapt mode: soften extreme recommendations
+    adapt_scale = 0.75 if mode == "adapt" else 1.0
+
+    # ── 1. Noise Gate ────────────────────────────────────────────────────────
+    # Base threshold on the dry noise floor
+    gate_threshold = clamp(noise_floor_dry + 6, -80, -20)
+    gate_attack = 5.0    # ms
+    gate_release = 150.0  # ms
+    gate_hold = 50.0      # ms
+
+    noise_gate = {
+        "enabled": noise_floor_dry > -55,
+        "threshold": round(gate_threshold, 1),
+        "attack": gate_attack,
+        "release": gate_release,
+        "hold": gate_hold,
+    }
+
+    # ── 2. De-Esser ──────────────────────────────────────────────────────────
+    sib_ref = ref_val("sibilance", 0.3)
+    sib_dry = dry_val("sibilance", 0.3)
+    # If dry has more sibilance than reference, de-ess to match
+    sib_excess = (sib_dry - sib_ref) * adapt_scale
+    deesser_reduction = clamp(sib_excess * 30, 0, 12)
+
+    deesser = {
+        "enabled": sib_excess > 0.02,
+        "center_frequency": 7500,
+        "bandwidth": 2000,
+        "reduction": round(deesser_reduction, 1),
+        "sensitivity": round(clamp(sib_dry * 2, 0.1, 1.0), 2),
+    }
+
+    # ── 3. Pitch Correction ──────────────────────────────────────────────────
+    # If dry has high pitch variance, suggest more correction
+    pitch_correction_amount = clamp(pitch_var_dry / 50.0, 0, 1.0) * adapt_scale
+    retune_speed = lerp(100, 20, pitch_correction_amount)  # ms: 100=natural, 20=tight
+    key = ref.get("key", "C")
+
+    pitch_correction = {
+        "enabled": pitch_var_dry > 15,
+        "key": key,
+        "scale": "major",
+        "retune_speed": round(retune_speed, 0),
+        "humanize": round(lerp(0.8, 0.3, pitch_correction_amount), 2),
+        "amount": round(pitch_correction_amount, 2),
+    }
+
+    # ── 4. Parametric EQ ─────────────────────────────────────────────────────
+    # Map freq_balance deltas to EQ gains
+    sub_diff = (freq_ref.get("sub_bass", 0.05) - freq_dry.get("sub_bass", 0.05)) * 200
+    bass_diff = (freq_ref.get("bass", 0.1) - freq_dry.get("bass", 0.1)) * 150
+    low_mid_diff = (freq_ref.get("low_mid", 0.15) - freq_dry.get("low_mid", 0.15)) * 120
+    high_mid_diff = (freq_ref.get("high_mid", 0.2) - freq_dry.get("high_mid", 0.2)) * 100
+    air_diff = (freq_ref.get("air", 0.05) - freq_dry.get("air", 0.05)) * 200
+
+    # Centroid-based high shelf adjustment
+    centroid_gain = clamp(centroid_diff / 500.0 * 6.0 * adapt_scale, -12, 12)
+
+    eq = {
+        "enabled": True,
+        "bands": [
+            {
+                "id": "low_cut",
+                "type": "highpass",
+                "frequency": 80,
+                "gain": 0,
+                "q": 0.707,
+                "enabled": True,
+            },
+            {
+                "id": "low",
+                "type": "lowshelf",
+                "frequency": 200,
+                "gain": round(clamp(bass_diff * adapt_scale, -12, 12), 1),
+                "q": 0.707,
+                "enabled": True,
+            },
+            {
+                "id": "low_mid",
+                "type": "peaking",
+                "frequency": 800,
+                "gain": round(clamp(low_mid_diff * adapt_scale, -12, 12), 1),
+                "q": 1.0,
+                "enabled": True,
+            },
+            {
+                "id": "high_mid",
+                "type": "peaking",
+                "frequency": 3500,
+                "gain": round(clamp(high_mid_diff * adapt_scale, -12, 12), 1),
+                "q": 1.2,
+                "enabled": True,
+            },
+            {
+                "id": "high_shelf",
+                "type": "highshelf",
+                "frequency": 10000,
+                "gain": round(clamp((air_diff + centroid_gain) * adapt_scale, -12, 12), 1),
+                "q": 0.707,
+                "enabled": True,
+            },
+        ]
+    }
+
+    # ── 5. Multiband Compressor ───────────────────────────────────────────────
+    # Apply more compression if reference has less dynamic range
+    mb_low_ratio = clamp(1.5 + (-dynamic_diff / 6) * 2, 1.2, 4.0) if dynamic_diff < 0 else 1.5
+    mb_mid_ratio = clamp(2.0 + (-dynamic_diff / 6) * 3, 1.5, 6.0) if dynamic_diff < 0 else 2.0
+    mb_high_ratio = clamp(1.8 + (-dynamic_diff / 6) * 2, 1.2, 4.0) if dynamic_diff < 0 else 1.8
+
+    multiband_comp = {
+        "enabled": abs(dynamic_diff) > 2,
+        "low": {
+            "crossover": 250,
+            "threshold": -24,
+            "ratio": round(mb_low_ratio * adapt_scale + 1 * (1 - adapt_scale), 2),
+            "attack": 10,
+            "release": 80,
+            "makeup": 2,
+        },
+        "mid": {
+            "crossover": 3000,
+            "threshold": -20,
+            "ratio": round(mb_mid_ratio * adapt_scale + 1 * (1 - adapt_scale), 2),
+            "attack": 5,
+            "release": 50,
+            "makeup": 3,
+        },
+        "high": {
+            "crossover_low": 3000,
+            "threshold": -22,
+            "ratio": round(mb_high_ratio * adapt_scale + 1 * (1 - adapt_scale), 2),
+            "attack": 3,
+            "release": 40,
+            "makeup": 2,
+        }
+    }
+
+    # ── 6. Vocal Compressor ──────────────────────────────────────────────────
+    comp_ratio = clamp(2.0 + (-dynamic_diff / 6) * 4, 1.5, 8.0)
+    comp_threshold = clamp(-18 + lufs_diff * 0.5, -40, -6)
+    comp_makeup = clamp(-lufs_diff * 0.4, 0, 12)
+
+    compressor = {
+        "enabled": True,
+        "threshold": round(comp_threshold * adapt_scale - 18 * (1 - adapt_scale), 1),
+        "ratio": round(comp_ratio * adapt_scale + 2.0 * (1 - adapt_scale), 2),
+        "attack": 8,
+        "release": 100,
+        "makeup": round(clamp(comp_makeup * adapt_scale, 0, 12), 1),
+        "knee": 3,
+    }
+
+    # ── 7. Saturation ────────────────────────────────────────────────────────
+    sat_excess = saturation_diff * adapt_scale
+    sat_drive = clamp(sat_excess * 20 + 10, 0, 50)
+    sat_modes = ["tube", "tape", "warm", "soft_clip"]
+    # Pick mode based on harmonic content
+    sat_mode = "tube" if harmonic_diff > 0 else "tape" if sat_drive > 20 else "warm"
+
+    saturation = {
+        "enabled": saturation_diff > 0.05,
+        "mode": sat_mode,
+        "drive": round(sat_drive, 1),
+        "tone": 50,
+        "mix": round(clamp(sat_excess * 60 + 20, 10, 80), 1),
+    }
+
+    # ── 8. Stereo Doubler ────────────────────────────────────────────────────
+    width_ref = ref_val("stereo_width", 0.3)
+    width_dry = dry_val("stereo_width", 0.0)
+    width_diff = width_ref - width_dry
+
+    doubler = {
+        "enabled": width_diff > 0.1,
+        "width": round(clamp(0.3 + width_diff * adapt_scale, 0, 1.0), 2),
+        "micro_delay": 12,  # ms
+        "detune": 8,        # cents
+        "mix": round(clamp(width_diff * 80 * adapt_scale, 10, 70), 1),
+    }
+
+    # ── 9. Delay ─────────────────────────────────────────────────────────────
+    bpm = ref_val("bpm", 120)
+    quarter_note_ms = (60000 / bpm) if bpm > 0 else 500
+
+    delay = {
+        "enabled": True,
+        "time_ms": round(quarter_note_ms / 2, 1),  # 1/8 note
+        "sync": "1/8",
+        "feedback": 20,
+        "damping": 60,
+        "mix": round(clamp(reverb_diff * 15 + 8, 5, 25), 1),
+    }
+
+    # ── 10. Reverb ───────────────────────────────────────────────────────────
+    reverb_ref = ref_val("reverb_tail", 0.2)
+    reverb_mix = clamp(reverb_ref * 35 * adapt_scale, 5, 40)
+    reverb_decay = clamp(reverb_ref * 4.0, 0.4, 6.0)
+    reverb_type_score = reverb_ref
+    reverb_type = "hall" if reverb_type_score > 0.5 else "plate" if reverb_type_score > 0.25 else "room"
+
+    reverb = {
+        "enabled": True,
+        "type": reverb_type,
+        "predelay": round(clamp(20 + reverb_ref * 40, 0, 100), 1),
+        "decay": round(reverb_decay, 2),
+        "damping": 60,
+        "mix": round(reverb_mix, 1),
+    }
+
+    # ── 11. Limiter ──────────────────────────────────────────────────────────
+    limiter = {
+        "enabled": True,
+        "ceiling": -0.3,
+        "threshold": -1.0,
+        "lookahead": 5,
+        "release": 100,
+    }
+
+    # ── AI Reasoning Notes ────────────────────────────────────────────────────
+    reasoning = _generate_reasoning(
+        lufs_diff, dynamic_diff, centroid_diff, sibilance_diff,
+        reverb_diff, saturation_diff, pitch_var_dry, mode
+    )
+
+    return {
+        "mode": mode,
+        "reasoning": reasoning,
+        "modules": {
+            "noise_gate": noise_gate,
+            "deesser": deesser,
+            "pitch_correction": pitch_correction,
+            "eq": eq,
+            "multiband_comp": multiband_comp,
+            "compressor": compressor,
+            "saturation": saturation,
+            "doubler": doubler,
+            "delay": delay,
+            "reverb": reverb,
+            "limiter": limiter,
+        }
+    }
+
+
+def _generate_reasoning(
+    lufs_diff, dynamic_diff, centroid_diff, sibilance_diff,
+    reverb_diff, saturation_diff, pitch_var_dry, mode
+) -> list:
+    notes = []
+
+    if abs(lufs_diff) > 2:
+        direction = "boosting makeup gain" if lufs_diff > 0 else "reducing output"
+        notes.append(f"Loudness gap: {lufs_diff:+.1f} dB — {direction} to compensate.")
+
+    if dynamic_diff < -3:
+        notes.append(f"Reference is {abs(dynamic_diff):.1f} dB more compressed — increasing compressor ratio.")
+    elif dynamic_diff > 3:
+        notes.append(f"Reference is {dynamic_diff:.1f} dB more dynamic — lightening compression.")
+
+    if centroid_diff > 300:
+        notes.append(f"Reference is brighter (+{centroid_diff:.0f} Hz centroid) — boosting high shelf.")
+    elif centroid_diff < -300:
+        notes.append(f"Reference is darker — cutting high shelf by {abs(centroid_diff/200):.1f} dB.")
+
+    if sibilance_diff < -0.05:
+        notes.append(f"Dry vocal is sibilant — de-esser active at 7.5 kHz.")
+
+    if reverb_diff > 0.15:
+        notes.append(f"Reference has more room ambience — adding reverb ({reverb_diff*100:.0f}% tail).")
+
+    if saturation_diff > 0.05:
+        notes.append(f"Reference has more harmonic saturation — adding tube/tape warmth.")
+
+    if pitch_var_dry > 20:
+        notes.append(f"Dry pitch is variable ({pitch_var_dry:.0f} cents std) — gentle pitch correction applied.")
+
+    if mode == "adapt":
+        notes.append("Running in Adapt mode: recommendations adjusted for your recording environment.")
+
+    return notes
