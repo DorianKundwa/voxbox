@@ -294,14 +294,14 @@ async function exportMP3(): Promise<void> {
     }
 
     const chunkSize = 1152;
-    const mp3Data: Uint8Array[] = [];
+    const mp3Data: ArrayBuffer[] = [];
     for (let i = 0; i < int16.length; i += chunkSize) {
       const chunk = int16.subarray(i, i + chunkSize);
       const encoded = encoder.encodeBuffer(chunk);
-      if (encoded.length > 0) mp3Data.push(new Uint8Array(encoded.buffer));
+      if (encoded.length > 0) mp3Data.push(encoded.buffer.slice(0));
     }
     const tail = encoder.flush();
-    if (tail.length > 0) mp3Data.push(new Uint8Array(tail.buffer));
+    if (tail.length > 0) mp3Data.push(tail.buffer.slice(0));
 
     const blob = new Blob(mp3Data, { type: "audio/mp3" });
     const url  = URL.createObjectURL(blob);
