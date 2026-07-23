@@ -126,6 +126,7 @@ export function ABMonitor() {
         {/* Loop toggle */}
         <button
           onClick={toggleLoop}
+          title="Toggle Loop"
           style={{
             width: 36, height: 36, borderRadius: 8,
             background: isLooping ? "rgba(6,182,212,0.2)" : "transparent",
@@ -137,6 +138,37 @@ export function ABMonitor() {
           }}
         >
           🔁
+        </button>
+
+        {/* Quick Download Processed Audio button */}
+        <button
+          onClick={async () => {
+            try {
+              const { audioBufferToWav } = await import("@/engine/AudioEngine");
+              const buf = await engine.renderProcessedAudio(modules);
+              const blob = audioBufferToWav(buf);
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `voxbox-processed-${new Date().toISOString().slice(0, 10)}.wav`;
+              a.click();
+              URL.revokeObjectURL(url);
+            } catch (err: any) {
+              alert(`Audio Download error: ${err.message || "Please upload audio first"}`);
+            }
+          }}
+          title="Download Processed Audio (Studio WAV)"
+          style={{
+            height: 36, padding: "0 10px", borderRadius: 8,
+            background: "rgba(57,255,20,0.15)",
+            border: "1px solid rgba(57,255,20,0.3)",
+            color: "#39ff14",
+            fontSize: 11, fontWeight: 700, cursor: "pointer",
+            display: "flex", alignItems: "center", gap: 4,
+            transition: "all 0.15s ease",
+          }}
+        >
+          <span>⬇ WAV</span>
         </button>
 
         {/* Master Volume */}

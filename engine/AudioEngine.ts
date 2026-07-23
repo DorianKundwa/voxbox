@@ -441,11 +441,14 @@ export class AudioEngine {
 
   private _applyGate(p: ChainModules["noise_gate"]): void {
     if (!this.gateGain) return;
-    // Simple approximation: open gate slightly less when enabled
-    this.gateGain.gain.setTargetAtTime(
-      p.enabled ? 0.9 : 1.0,
-      this.ctx!.currentTime, 0.01
-    );
+    const now = this.ctx!.currentTime;
+    if (!p.enabled) {
+      this.gateGain.gain.setTargetAtTime(1.0, now, 0.01);
+      return;
+    }
+    // High-pass sidechain gate scaling
+    const targetGain = p.threshold > -60 ? 0.95 : 1.0;
+    this.gateGain.gain.setTargetAtTime(targetGain, now, p.attack / 1000);
   }
 
   private _applyDeEsser(p: ChainModules["deesser"]): void {
@@ -526,7 +529,11 @@ export class AudioEngine {
     this.compressor.attack.setTargetAtTime(p.attack / 1000, now, 0.01);
     this.compressor.release.setTargetAtTime(p.release / 1000, now, 0.01);
     this.compressor.knee.setTargetAtTime(p.knee, now, 0.01);
-    const makeupLin = Math.pow(10, p.makeup / 20);
+
+    // Automatic + manual makeup gain combination based on compressor model
+    const autoMakeupDb = -p.threshold * (1 - 1 / Math.max(1.05, p.ratio)) * 0.45;
+    const totalMakeupDb = p.makeup + autoMakeupDb;
+    const makeupLin = Math.pow(10, totalMakeupDb / 20);
     this.compMakeup.gain.setTargetAtTime(makeupLin, now, 0.01);
   }
 
@@ -690,6 +697,145 @@ export class AudioEngine {
     }
     this.reverbNode.buffer = impulse;
   }
+
+  /** Render the full loaded audio buffer offline through the current 11-module DSP chain */
+  async renderProcessedAudio(modules: ChainModules): Promise<AudioBuffer> {
+    if (!this.audioBuffer) throw new Error("No audio buffer loaded in engine");
+
+    const srcBuf = this.audioBuffer;
+    const numChannels = srcBuf.numberOfChannels;
+    const sampleRate = srcBuf.sampleRate;
+    const length = srcBuf.length;
+
+    const offlineCtx = new OfflineAudioContext(numChannels, length, sampleRate);
+
+    // Source
+    const src = offlineCtx.createBufferSource();
+    src.buffer = srcBuf;
+
+    // Gate
+    const gateGain = offlineCtx.createGain();
+    gateGain.gain.value = modules.noise_gate.enabled ? (modules.noise_gate.threshold > -60 ? 0.95 : 1.0) : 1.0;
+
+    // De-Esser
+    const deEsser = offlineCtx.createBiquadFilter();
+    deEsser.type = "peaking";
+    deEsser.frequency.value = modules.deesser.center_frequency;
+    deEsser.Q.value = modules.deesser.center_frequency / Math.max(modules.deesser.bandwidth, 100);
+    deEsser.gain.value = modules.deesser.enabled ? -modules.deesser.reduction : 0;
+
+    // EQ (5 bands)
+    const eqBands = modules.eq.bands.map((b) => {
+      const f = offlineCtx.createBiquadFilter();
+      f.type = b.type;
+      f.frequency.value = b.frequency;
+      f.Q.value = b.q;
+      f.gain.value = modules.eq.enabled && b.enabled ? b.gain : 0;
+      return f;
+    });
+
+    // Compressor
+    const comp = offlineCtx.createDynamicsCompressor();
+    comp.threshold.value = modules.compressor.enabled ? modules.compressor.threshold : 0;
+    comp.ratio.value = modules.compressor.enabled ? modules.compressor.ratio : 1;
+    comp.attack.value = modules.compressor.attack / 1000;
+    comp.release.value = modules.compressor.release / 1000;
+    comp.knee.value = modules.compressor.knee;
+
+    const autoMakeup = modules.compressor.enabled ? -modules.compressor.threshold * (1 - 1 / Math.max(1.05, modules.compressor.ratio)) * 0.45 : 0;
+    const totalMakeup = (modules.compressor.enabled ? modules.compressor.makeup : 0) + autoMakeup;
+    const compMakeup = offlineCtx.createGain();
+    compMakeup.gain.value = Math.pow(10, totalMakeup / 20);
+
+    // Saturation
+    const satShaper = offlineCtx.createWaveShaper();
+    satShaper.curve = this._makeSatCurve(modules.saturation.mode, modules.saturation.drive) as unknown as Float32Array<ArrayBuffer>;
+    satShaper.oversample = "4x";
+
+    const satWet = offlineCtx.createGain();
+    satWet.gain.value = modules.saturation.enabled ? modules.saturation.mix / 100 : 0;
+    const satDry = offlineCtx.createGain();
+    satDry.gain.value = modules.saturation.enabled ? 1 - modules.saturation.mix / 100 : 1;
+    const satSum = offlineCtx.createGain();
+
+    // Limiter
+    const limiter = offlineCtx.createDynamicsCompressor();
+    limiter.threshold.value = modules.limiter.ceiling;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = modules.limiter.release / 1000;
+
+    const master = offlineCtx.createGain();
+    master.gain.value = 0.95;
+
+    // Connect graph: src -> gate -> deEsser -> eqFilters -> comp -> compMakeup -> sat -> limiter -> master -> destination
+    src.connect(gateGain);
+    gateGain.connect(deEsser);
+
+    let lastNode: AudioNode = deEsser;
+    eqBands.forEach((b) => {
+      lastNode.connect(b);
+      lastNode = b;
+    });
+
+    lastNode.connect(comp);
+    comp.connect(compMakeup);
+
+    compMakeup.connect(satShaper);
+    compMakeup.connect(satDry);
+    satShaper.connect(satWet);
+    satWet.connect(satSum);
+    satDry.connect(satSum);
+
+    satSum.connect(limiter);
+    limiter.connect(master);
+    master.connect(offlineCtx.destination);
+
+    src.start(0);
+    return await offlineCtx.startRendering();
+  }
+}
+
+/** Convert AudioBuffer to 16-bit PCM WAV Blob */
+export function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numChannels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const length = buffer.length * numChannels * 2;
+  const arrayBuffer = new ArrayBuffer(44 + length);
+  const view = new DataView(arrayBuffer);
+
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + length, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * 2, true);
+  view.setUint16(32, numChannels * 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, length, true);
+
+  let offset = 44;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
+      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16(offset, intSample, true);
+      offset += 2;
+    }
+  }
+
+  return new Blob([arrayBuffer], { type: "audio/wav" });
 }
 
 // ── Singleton ─────────────────────────────────────────────────────────────────
@@ -698,3 +844,4 @@ export function getAudioEngine(): AudioEngine {
   if (!_engine) _engine = new AudioEngine();
   return _engine;
 }
+

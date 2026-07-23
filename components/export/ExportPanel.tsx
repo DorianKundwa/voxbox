@@ -269,23 +269,32 @@ async function exportPDF(modules: ChainModules, reasoning: string[]) {
   doc.save("voxbox-preset.pdf");
 }
 
-async function exportMP3(): Promise<void> {
+async function exportWAV(modules: ChainModules): Promise<void> {
   try {
     const eng = getAudioEngine();
-    const ctx = eng.getContext();
-    if (!ctx) throw new Error("Audio engine not initialised");
+    const buf = await eng.renderProcessedAudio(modules);
+    const blob = audioBufferToWav(buf);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `voxbox-processed-${new Date().toISOString().slice(0, 10)}.wav`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err: any) {
+    alert(`WAV Audio Download failed: ${err.message || err}`);
+  }
+}
 
-    // Collect ~30s of audio from the current buffer at full quality
-    const duration = Math.min(eng.currentTime + 0.1, 30);
-    const offlineCtx = new OfflineAudioContext(1, Math.floor(ctx.sampleRate * duration), ctx.sampleRate);
-
-    // Re-render in offline context (simplified — exports dry+chain approximation)
-    const buf = await offlineCtx.startRendering();
+async function exportMP3(modules: ChainModules): Promise<void> {
+  try {
+    const eng = getAudioEngine();
+    const buf = await eng.renderProcessedAudio(modules);
+    const sampleRate = buf.sampleRate;
     const pcm = buf.getChannelData(0);
 
     // Encode to MP3 with lamejs at 320kbps
     const { Mp3Encoder } = await import("lamejs");
-    const encoder = new Mp3Encoder(1, ctx.sampleRate, 320);
+    const encoder = new Mp3Encoder(1, sampleRate, 320);
 
     // Convert Float32 PCM [-1,1] to Int16
     const int16 = new Int16Array(pcm.length);
@@ -303,7 +312,6 @@ async function exportMP3(): Promise<void> {
     const tail = encoder.flush();
     for (let j = 0; j < tail.length; j++) rawChunks.push(tail[j]);
 
-    // Build a plain ArrayBuffer — avoids ArrayBufferLike/SharedArrayBuffer ambiguity
     const finalBuf = new ArrayBuffer(rawChunks.length);
     const view     = new Uint8Array(finalBuf);
     rawChunks.forEach((b, i) => { view[i] = b & 0xff; });
@@ -312,23 +320,24 @@ async function exportMP3(): Promise<void> {
     const url  = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `voxbox-processed-${new Date().toISOString().slice(0,10)}.mp3`;
+    a.download = `voxbox-processed-${new Date().toISOString().slice(0, 10)}.mp3`;
     a.click();
     URL.revokeObjectURL(url);
-  } catch (err) {
-    alert(`MP3 export failed: ${err}`);
+  } catch (err: any) {
+    alert(`MP3 Audio Download failed: ${err.message || err}`);
   }
 }
 
 // ── Export Panel Component ────────────────────────────────────────────────────
 
 const FORMATS = [
-  { id: "json", label: "JSON",  icon: "{}", desc: "Full preset with AI notes" },
-  { id: "xml",  label: "XML",   icon: "<>", desc: "DAW-compatible structure"  },
-  { id: "txt",  label: "TXT",   icon: "≡",  desc: "Human-readable report"     },
-  { id: "csv",  label: "CSV",   icon: "⊞",  desc: "Spreadsheet table"         },
-  { id: "pdf",  label: "PDF",   icon: "📄", desc: "Formatted document"        },
-  { id: "mp3",  label: "MP3",   icon: "🎵", desc: "Export processed audio"    },
+  { id: "wav",  label: "WAV",   icon: "🎧", desc: "Lossless 16-bit Studio WAV Audio" },
+  { id: "mp3",  label: "MP3",   icon: "🎵", desc: "320 kbps High-Quality MP3 Audio"   },
+  { id: "json", label: "JSON",  icon: "{}", desc: "Full preset with AI notes"         },
+  { id: "xml",  label: "XML",   icon: "<>", desc: "DAW-compatible structure"          },
+  { id: "txt",  label: "TXT",   icon: "≡",  desc: "Human-readable report"             },
+  { id: "csv",  label: "CSV",   icon: "⊞",  desc: "Spreadsheet table"                 },
+  { id: "pdf",  label: "PDF",   icon: "📄", desc: "Formatted PDF document"            },
 ] as const;
 
 type Format = (typeof FORMATS)[number]["id"];
@@ -346,6 +355,8 @@ export function ExportPanel() {
 
     try {
       switch (fmt) {
+        case "wav":  await exportWAV(modules); break;
+        case "mp3":  await exportMP3(modules); break;
         case "json": {
           const json = JSON.stringify({ modules, reasoning, version: "1.0.0", exported: new Date().toISOString() }, null, 2);
           downloadFile(json, `${base}.json`, "application/json");
