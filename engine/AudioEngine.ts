@@ -117,7 +117,7 @@ export class AudioEngine {
   async init(): Promise<void> {
     if (this.ctx) return;
     try {
-      this.ctx = new AudioContext({ sampleRate: 44100 });
+      this.ctx = new AudioContext();
       if (this.ctx.state === "suspended") await this.ctx.resume();
       this._buildGraph();
       // Load pitch worklet after graph is built (non-blocking)
@@ -373,13 +373,20 @@ export class AudioEngine {
     }
     this.stop();
 
+    const now = this.ctx.currentTime;
     const src = this.ctx.createBufferSource();
     src.buffer = this.audioBuffer;
     src.loop = this._looping;
     src.connect(this.gateGain);
+
+    // Micro fade-in (5ms) to eliminate start-click pops
+    this.gateGain.gain.cancelScheduledValues(now);
+    this.gateGain.gain.setValueAtTime(0.001, now);
+    this.gateGain.gain.exponentialRampToValueAtTime(1.0, now + 0.005);
+
     src.start(0, offset);
     this.sourceNode = src;
-    this.startTime = this.ctx.currentTime - offset;
+    this.startTime = now - offset;
     this._isPlaying = true;
 
     src.onended = () => {
@@ -388,12 +395,29 @@ export class AudioEngine {
   }
 
   stop(): void {
-    try {
-      this.sourceNode?.disconnect();
-      (this.sourceNode as AudioBufferSourceNode)?.stop();
-    } catch { /* already stopped */ }
+    if (!this.ctx || !this.sourceNode) {
+      this._isPlaying = false;
+      this.sourceNode = null;
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const oldNode = this.sourceNode;
     this.sourceNode = null;
     this._isPlaying = false;
+
+    // Micro fade-out (5ms) to eliminate stop-click pops
+    if (this.gateGain) {
+      this.gateGain.gain.cancelScheduledValues(now);
+      this.gateGain.gain.setValueAtTime(Math.max(0.001, this.gateGain.gain.value), now);
+      this.gateGain.gain.exponentialRampToValueAtTime(0.001, now + 0.005);
+    }
+
+    setTimeout(() => {
+      try {
+        oldNode.disconnect();
+        (oldNode as AudioBufferSourceNode)?.stop();
+      } catch { /* already stopped */ }
+    }, 10);
   }
 
   get currentTime(): number {
