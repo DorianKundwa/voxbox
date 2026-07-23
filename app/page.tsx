@@ -11,6 +11,7 @@ import { ABMonitor } from "@/components/monitor/ABMonitor";
 import { LUFSMeter } from "@/components/monitor/LUFSMeter";
 import { PitchDisplay } from "@/components/monitor/PitchDisplay";
 import { ExportPanel } from "@/components/export/ExportPanel";
+import { PresetManager } from "@/components/preset/PresetManager";
 import { MultiTrackRack } from "@/components/multitrack/MultiTrackRack";
 import { ChainSync } from "@/components/chain/ChainSync";
 import { useAudioStore } from "@/store/audioStore";
@@ -390,6 +391,9 @@ export default function VoxBoxPage() {
               </div>
               <FeaturePanel />
             </div>
+
+            {/* Preset Library */}
+            <PresetManager />
 
             {/* Export */}
             <ExportPanel />

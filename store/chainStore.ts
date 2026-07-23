@@ -70,6 +70,7 @@ interface ChainStore {
   applyRecommendation: (rec: ChainRecommendation) => void;
   setModuleOrder: (order: ModuleKey[]) => void;
   resetChain: () => void;
+  loadModules: (modules: ChainModules) => void;
   exportJSON: () => string;
 }
 
@@ -79,6 +80,8 @@ export const useChainStore = create<ChainStore>()(
       modules: DEFAULT_CHAIN,
       moduleOrder: MODULE_ORDER,
       recommendation: null,
+
+      loadModules: (newModules) => set({ modules: newModules }),
 
       setParam: (module, param, value) =>
         set((state) => ({
