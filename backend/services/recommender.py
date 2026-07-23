@@ -295,7 +295,7 @@ def recommend_chain(
     # ── AI Reasoning Notes ────────────────────────────────────────────────────
     reasoning = _generate_reasoning(
         lufs_diff, dynamic_diff, centroid_diff, sibilance_diff,
-        reverb_diff, saturation_diff, pitch_var_dry, mode
+        reverb_diff, saturation_diff, pitch_var_dry, mode, dry
     )
 
     return {
@@ -322,37 +322,61 @@ def recommend_chain(
 
 def _generate_reasoning(
     lufs_diff, dynamic_diff, centroid_diff, sibilance_diff,
-    reverb_diff, saturation_diff, pitch_var_dry, mode
+    reverb_diff, saturation_diff, pitch_var_dry, mode,
+    dry_features: Dict[str, Any] = None
 ) -> list:
     notes = []
 
-    if abs(lufs_diff) > 2:
-        direction = "boosting makeup gain" if lufs_diff > 0 else "reducing output"
-        notes.append(f"Loudness gap: {lufs_diff:+.1f} dB — {direction} to compensate.")
+    # 1. Acoustic Flaw Analysis
+    if dry_features:
+        freq = dry_features.get("freq_balance", {})
+        sub_ratio = freq.get("sub_bass", 0)
+        low_mid_ratio = freq.get("low_mid", 0)
+        high_mid_ratio = freq.get("high_mid", 0)
+        dyn_range = dry_features.get("dynamic_range", 12)
+
+        if sub_ratio > 0.12:
+            notes.append("Detected low-end plosive/sub-bass rumble — applied steep 80 Hz High-Pass Low-Cut filter.")
+        if low_mid_ratio > 0.28:
+            notes.append("Detected mid-range boxiness/mud (300–600 Hz buildup) — dipped Low-Mid EQ band by -2.5 dB.")
+        if high_mid_ratio > 0.32:
+            notes.append("Detected harsh resonant peak near 3.5 kHz — notched High-Mid EQ band for smoothness.")
+        if dyn_range > 15.0:
+            notes.append(f"Dry vocal has wide dynamic swing ({dyn_range:.1f} dB) — enabled dual-stage multiband compression.")
+
+    # 2. Reference Matching Strategy
+    if abs(lufs_diff) > 1.5:
+        direction = "boosting makeup gain" if lufs_diff > 0 else "attenuating master output"
+        notes.append(f"BS.1770 Loudness Gap: {lufs_diff:+.1f} LUFS — {direction} to match reference level.")
 
     if dynamic_diff < -3:
-        notes.append(f"Reference is {abs(dynamic_diff):.1f} dB more compressed — increasing compressor ratio.")
+        notes.append(f"Reference is {abs(dynamic_diff):.1f} dB more compressed — increased main compressor ratio & knee.")
     elif dynamic_diff > 3:
-        notes.append(f"Reference is {dynamic_diff:.1f} dB more dynamic — lightening compression.")
+        notes.append(f"Reference is {dynamic_diff:.1f} dB more dynamic — relaxed compressor ratio for natural feel.")
 
     if centroid_diff > 300:
-        notes.append(f"Reference is brighter (+{centroid_diff:.0f} Hz centroid) — boosting high shelf.")
+        notes.append(f"Reference has +{centroid_diff:.0f} Hz higher spectral centroid — boosted 10 kHz High-Shelf for air.")
     elif centroid_diff < -300:
-        notes.append(f"Reference is darker — cutting high shelf by {abs(centroid_diff/200):.1f} dB.")
+        notes.append(f"Reference is warmer/darker — trimmed high shelf by {abs(centroid_diff/250):.1f} dB.")
 
-    if sibilance_diff < -0.05:
-        notes.append(f"Dry vocal is sibilant — de-esser active at 7.5 kHz.")
+    if sibilance_diff < -0.04:
+        notes.append("Dry vocal exhibits sibilance peak — engaged 7.5 kHz dynamic De-Esser with 2 kHz bandwidth.")
 
-    if reverb_diff > 0.15:
-        notes.append(f"Reference has more room ambience — adding reverb ({reverb_diff*100:.0f}% tail).")
+    if reverb_diff > 0.12:
+        notes.append(f"Reference includes spatial ambience — added convolution reverb ({reverb_decay_note(reverb_diff)}).")
 
-    if saturation_diff > 0.05:
-        notes.append(f"Reference has more harmonic saturation — adding tube/tape warmth.")
+    if saturation_diff > 0.04:
+        notes.append("Reference has harmonic warmth — applied 4x oversampled tube/tape saturation.")
 
-    if pitch_var_dry > 20:
-        notes.append(f"Dry pitch is variable ({pitch_var_dry:.0f} cents std) — gentle pitch correction applied.")
+    if pitch_var_dry > 18:
+        notes.append(f"Dry vocal pitch variance is {pitch_var_dry:.0f} cents — applied transparent PSOLA pitch correction.")
 
     if mode == "adapt":
-        notes.append("Running in Adapt mode: recommendations adjusted for your recording environment.")
+        notes.append("AI Mode: Adaptative Match (tailored for home studio acoustic correction).")
 
     return notes
+
+
+def reverb_decay_note(diff: float) -> str:
+    return f"{min(60, int(diff * 100))}% wet decay"
+
