@@ -100,6 +100,10 @@ export class AudioEngine {
   // Limiter
   private limiterNode!: DynamicsCompressorNode;
 
+  // Pitch Correction (AudioWorklet granular pitch shifter)
+  private pitchShiftNode: AudioWorkletNode | null = null;
+  private pitchBypass!: GainNode;   // direct path when worklet not loaded
+
   // Analyser + Master
   private analyserNode!: AnalyserNode;
   private masterGainNode!: GainNode;
@@ -115,6 +119,28 @@ export class AudioEngine {
     this.ctx = new AudioContext({ sampleRate: 44100 });
     if (this.ctx.state === "suspended") await this.ctx.resume();
     this._buildGraph();
+    // Load pitch worklet after graph is built (non-blocking)
+    this._loadPitchWorklet().catch(() => {});
+  }
+
+  private async _loadPitchWorklet(): Promise<void> {
+    if (!this.ctx) return;
+    try {
+      await this.ctx.audioWorklet.addModule("/dsp/pitch-processor.js");
+      const node = new AudioWorkletNode(this.ctx, "pitch-shift-processor");
+
+      // Remove bypass path: deEsser --[pitchBypass]--> EQ[0]
+      this.pitchBypass.disconnect();            // pitchBypass → EQ[0]
+      this.deEsserFilter.disconnect();          // deEsser → pitchBypass
+
+      // Insert worklet: deEsser → pitchShiftNode → EQ[0]
+      this.deEsserFilter.connect(node);
+      node.connect(this.eqFilters[0]);
+      this.pitchShiftNode = node;
+    } catch (err) {
+      console.warn("[AudioEngine] Pitch worklet unavailable, using bypass:", err);
+      // pitchBypass stays wired — no change needed
+    }
   }
 
   // ── Graph construction ─────────────────────────────────────────────────────
@@ -286,15 +312,21 @@ export class AudioEngine {
     }
     this.eqFilters[this.eqFilters.length - 1].connect(this.compressor);
 
-    // ── 10. De-Esser (peaking filter, sits between gate and EQ) ──
+    // ── 10. De-Esser (peaking filter) ────────────────────────────
     this.deEsserFilter = ctx.createBiquadFilter();
     this.deEsserFilter.type = "peaking";
     this.deEsserFilter.frequency.value = 7500;
     this.deEsserFilter.Q.value = 2.0;
     this.deEsserFilter.gain.value = 0;   // 0 dB = bypass by default
-    this.deEsserFilter.connect(this.eqFilters[0]);
 
-    // ── 11. Gate (entry point) ────────────────────────────────────
+    // ── 11. Pitch bypass (used until AudioWorklet is loaded) ──────
+    // Once the worklet loads, it replaces this bypass path.
+    this.pitchBypass = ctx.createGain();
+    this.pitchBypass.gain.value = 1.0;
+    this.deEsserFilter.connect(this.pitchBypass);
+    this.pitchBypass.connect(this.eqFilters[0]);
+
+    // ── 12. Gate (entry point) ────────────────────────────────────
     this.gateGain = ctx.createGain();
     this.gateGain.gain.value = 1.0;
     this.gateGain.connect(this.deEsserFilter);
@@ -373,14 +405,15 @@ export class AudioEngine {
     if (!this.ctx) return;
     this._applyGate(modules.noise_gate);
     this._applyDeEsser(modules.deesser);
-    this._applyEQ(modules.eq.bands, modules.eq.enabled);          // FIX #2
-    this._applyCompressor(modules.compressor);                     // FIX #3
+    this._applyPitchCorrection(modules.pitch_correction);
+    this._applyEQ(modules.eq.bands, modules.eq.enabled);
+    this._applyCompressor(modules.compressor);
     this._applyMultibandComp(modules.multiband_comp);
     this._applySaturation(modules.saturation);
     this._applyDoubler(modules.doubler);
     this._applyDelay(modules.delay);
     this._applyReverb(modules.reverb);
-    this._applyLimiter(modules.limiter);                           // FIX #4
+    this._applyLimiter(modules.limiter);
   }
 
   // ── Module implementations ────────────────────────────────────────────────
@@ -407,6 +440,28 @@ export class AudioEngine {
       p.enabled ? -Math.abs(p.reduction) : 0,
       now, 0.01
     );
+  }
+
+  private _applyPitchCorrection(p: ChainModules["pitch_correction"]): void {
+    const node = this.pitchShiftNode;
+    if (!node) return;  // worklet not loaded yet — bypass path is active
+
+    const shiftParam = node.parameters.get("shift");
+    const mixParam   = node.parameters.get("mix");
+    if (!shiftParam || !mixParam) return;
+
+    const now = this.ctx!.currentTime;
+    if (!p.enabled) {
+      mixParam.setTargetAtTime(0, now, 0.01);   // full dry = bypass
+      return;
+    }
+
+    // Map amount (0-1) to ±3 semitone range for gentle correction
+    const semitones = (p.amount - 0.5) * 6;    // -3 to +3 st
+    const wetMix    = Math.min(1, p.amount * 1.5);
+
+    shiftParam.setTargetAtTime(semitones, now, p.retune_speed / 1000);
+    mixParam.setTargetAtTime(wetMix, now, 0.01);
   }
 
   private _applyEQ(bands: EQBand[], enabled: boolean): void {
