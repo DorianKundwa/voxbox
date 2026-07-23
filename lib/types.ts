@@ -167,8 +167,18 @@ export interface ChainModules {
 
 export type ModuleKey = keyof ChainModules;
 
+export interface MatchBreakdown {
+  spectral_fit: number;   // 0-100%
+  loudness_fit: number;   // 0-100%
+  dynamics_fit: number;   // 0-100%
+}
+
 export interface ChainRecommendation {
   mode: string;
+  match_score: number;    // 0-100%
+  breakdown: MatchBreakdown;
   reasoning: string[];
   modules: ChainModules;
+  target_spectrum?: number[]; // 31-band normalized target power
 }
+

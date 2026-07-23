@@ -270,6 +270,28 @@ def recommend_chain(
         "release": 100,
     }
 
+    # ── Match Score & Breakdown ──────────────────────────────────────────────
+    b31_ref = freq_ref.get("bands_31", [])
+    b31_dry = freq_dry.get("bands_31", [])
+
+    if len(b31_ref) == 31 and len(b31_dry) == 31:
+        diff_sq = sum((r - d) ** 2 for r, d in zip(b31_ref, b31_dry))
+        spectral_rmse = math.sqrt(diff_sq / 31.0)
+        spectral_fit = round(max(0.0, min(100.0, 100.0 - spectral_rmse * 1200.0)), 1)
+    else:
+        spectral_fit = round(max(0.0, min(100.0, 100.0 - abs(centroid_diff) / 10.0)), 1)
+
+    loudness_fit = round(max(0.0, min(100.0, 100.0 - abs(lufs_diff) * 3.5)), 1)
+    dynamics_fit = round(max(0.0, min(100.0, 100.0 - abs(dynamic_diff) * 4.0)), 1)
+
+    match_score = round(spectral_fit * 0.5 + loudness_fit * 0.3 + dynamics_fit * 0.2, 1)
+
+    breakdown = {
+        "spectral_fit": spectral_fit,
+        "loudness_fit": loudness_fit,
+        "dynamics_fit": dynamics_fit,
+    }
+
     # ── AI Reasoning Notes ────────────────────────────────────────────────────
     reasoning = _generate_reasoning(
         lufs_diff, dynamic_diff, centroid_diff, sibilance_diff,
@@ -278,7 +300,10 @@ def recommend_chain(
 
     return {
         "mode": mode,
+        "match_score": match_score,
+        "breakdown": breakdown,
         "reasoning": reasoning,
+        "target_spectrum": b31_ref if len(b31_ref) == 31 else [],
         "modules": {
             "noise_gate": noise_gate,
             "deesser": deesser,

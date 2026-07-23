@@ -66,6 +66,20 @@ def extract_features(path: str) -> Dict[str, Any]:
         mask = (freqs >= lo) & (freqs <= hi)
         return float(np.mean(stft[mask, :]))
 
+    # ISO 31-band 1/3 octave center frequencies (20 Hz to 20 kHz)
+    iso_centers = [
+        20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500,
+        630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000
+    ]
+    bands_31 = []
+    for fc in iso_centers:
+        lo = fc / (2 ** (1/6))
+        hi = fc * (2 ** (1/6))
+        bands_31.append(band_energy(lo, hi))
+
+    total_31 = sum(bands_31) + 1e-9
+    bands_31_norm = [round(float(v / total_31), 6) for v in bands_31]
+
     freq_balance = {
         "sub_bass": band_energy(20, 80),
         "bass": band_energy(80, 250),
@@ -79,6 +93,7 @@ def extract_features(path: str) -> Dict[str, Any]:
     # Normalize freq balance
     total = sum(freq_balance.values()) + 1e-9
     freq_balance = {k: v / total for k, v in freq_balance.items()}
+    freq_balance["bands_31"] = bands_31_norm
 
     # ── Sibilance ────────────────────────────────────────────────────────────
     sibilance = float(band_energy(5000, 10000) / (band_energy(1000, 20000) + 1e-9))

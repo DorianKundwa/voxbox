@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import * as d3 from "d3";
+import { useChainStore } from "@/store/chainStore";
 import { getAudioEngine } from "@/engine/AudioEngine";
 
 interface SpectrumAnalyzerProps {
@@ -16,20 +17,28 @@ const MAX_DB      = 0;
 const FREQ_MIN    = 40;
 const FREQ_MAX    = 20000;
 
+// ISO 31-band center frequencies
+const ISO_CENTERS = [
+  20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500,
+  630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000
+];
+
 // Frequency labels on the X axis
 const FREQ_TICKS  = [63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
 export function SpectrumAnalyzer({ height = 100 }: SpectrumAnalyzerProps) {
+  const targetSpectrum = useChainStore((s) => s.recommendation?.target_spectrum);
   const svgRef  = useRef<SVGSVGElement>(null);
   const rafRef  = useRef<number>(0);
   const initRef = useRef(false);
 
   // d3 selections & scales stored across frames
-  const scaleX  = useRef<d3.ScaleLogarithmic<number, number> | undefined>(undefined);
-  const scaleY  = useRef<d3.ScaleLinear<number, number> | undefined>(undefined);
-  const pathRef = useRef<d3.Selection<SVGPathElement, unknown, null, undefined> | undefined>(undefined);
-  const peakRef = useRef<d3.Selection<SVGPathElement, unknown, null, undefined> | undefined>(undefined);
-  const peakBuf = useRef<Float32Array>(new Float32Array(FFT_SIZE / 2));
+  const scaleX    = useRef<d3.ScaleLogarithmic<number, number> | undefined>(undefined);
+  const scaleY    = useRef<d3.ScaleLinear<number, number> | undefined>(undefined);
+  const pathRef   = useRef<d3.Selection<SVGPathElement, unknown, null, undefined> | undefined>(undefined);
+  const peakRef   = useRef<d3.Selection<SVGPathElement, unknown, null, undefined> | undefined>(undefined);
+  const targetRef = useRef<d3.Selection<SVGPathElement, unknown, null, undefined> | undefined>(undefined);
+  const peakBuf   = useRef<Float32Array>(new Float32Array(FFT_SIZE / 2));
 
   const setupD3 = useCallback((svg: SVGSVGElement) => {
     const W = svg.clientWidth || 800;
@@ -98,7 +107,15 @@ export function SpectrumAnalyzer({ height = 100 }: SpectrumAnalyzerProps) {
     grad.append("stop").attr("offset", "60%").attr("stop-color", "#06b6d4").attr("stop-opacity", 0.3);
     grad.append("stop").attr("offset", "100%").attr("stop-color", "#06b6d4").attr("stop-opacity", 0.0);
 
-    // Peak hold path (drawn below the main path)
+    // Target reference envelope curve (dashed violet line)
+    targetRef.current = g.append("path")
+      .attr("fill", "none")
+      .attr("stroke", "#be93ff")
+      .attr("stroke-width", 1.5)
+      .attr("stroke-dasharray", "4,3")
+      .attr("opacity", 0.85);
+
+    // Peak hold path
     peakRef.current = g.append("path")
       .attr("fill", "none")
       .attr("stroke", "rgba(57,255,20,0.45)")
@@ -191,6 +208,15 @@ export function SpectrumAnalyzer({ height = 100 }: SpectrumAnalyzerProps) {
 
       pathRef.current.attr("d", lineGen(closedPoints) ?? "");
       peakRef.current?.attr("d", lineGen(peakPoints) ?? "");
+
+      if (targetSpectrum && targetSpectrum.length === 31 && targetRef.current) {
+        const targetPoints: [number, number][] = ISO_CENTERS.map((fc, idx) => {
+          const power = targetSpectrum[idx] ?? 0;
+          const db = Math.max(MIN_DB, Math.min(MAX_DB, -60 + Math.log10(power * 10 + 1e-6) * 20));
+          return [xScale(fc), yScale(db)];
+        });
+        targetRef.current.attr("d", lineGen(targetPoints) ?? "");
+      }
 
       rafRef.current = requestAnimationFrame(tick);
     };
