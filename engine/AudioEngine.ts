@@ -116,11 +116,17 @@ export class AudioEngine {
 
   async init(): Promise<void> {
     if (this.ctx) return;
-    this.ctx = new AudioContext({ sampleRate: 44100 });
-    if (this.ctx.state === "suspended") await this.ctx.resume();
-    this._buildGraph();
-    // Load pitch worklet after graph is built (non-blocking)
-    this._loadPitchWorklet().catch(() => {});
+    try {
+      this.ctx = new AudioContext({ sampleRate: 44100 });
+      if (this.ctx.state === "suspended") await this.ctx.resume();
+      this._buildGraph();
+      // Load pitch worklet after graph is built (non-blocking)
+      this._loadPitchWorklet().catch(() => {});
+    } catch (err) {
+      console.error("[AudioEngine] Init failed:", err);
+      this.ctx = null;
+      throw err;
+    }
   }
 
   private async _loadPitchWorklet(): Promise<void> {
@@ -147,6 +153,10 @@ export class AudioEngine {
 
   private _buildGraph(): void {
     const ctx = this.ctx!;
+
+    // ── 0. Gate (entry point — initialized first) ──────────────────
+    this.gateGain = ctx.createGain();
+    this.gateGain.gain.value = 1.0;
 
     // ── 1. Master + Analyser ─────────────────────────────────────
     this.masterGainNode = ctx.createGain();
@@ -190,14 +200,24 @@ export class AudioEngine {
     this.delayDry.connect(this.reverbDry);
     this.delayDry.connect(this.reverbNode);
 
-    // ── 5. Doubler (stereo micro-delay) ──────────────────────────
+    // ── 5. Doubler (stereo micro-delay with safe panner fallback) ─
     this.doublerDelayL = ctx.createDelay(0.1);
     this.doublerDelayR = ctx.createDelay(0.1);
     this.doublerDelayL.delayTime.value = 0.012;  // 12ms
     this.doublerDelayR.delayTime.value = 0.015;  // 15ms
 
-    this.doublerPanL = ctx.createStereoPanner(); this.doublerPanL.pan.value = -0.7;
-    this.doublerPanR = ctx.createStereoPanner(); this.doublerPanR.pan.value =  0.7;
+    try {
+      if (typeof ctx.createStereoPanner === "function") {
+        this.doublerPanL = ctx.createStereoPanner(); (this.doublerPanL as StereoPannerNode).pan.value = -0.7;
+        this.doublerPanR = ctx.createStereoPanner(); (this.doublerPanR as StereoPannerNode).pan.value =  0.7;
+      } else {
+        this.doublerPanL = ctx.createGain() as any;
+        this.doublerPanR = ctx.createGain() as any;
+      }
+    } catch {
+      this.doublerPanL = ctx.createGain() as any;
+      this.doublerPanR = ctx.createGain() as any;
+    }
     this.doublerWet  = ctx.createGain(); this.doublerWet.gain.value  = 0.0; // off by default
     this.doublerDry  = ctx.createGain(); this.doublerDry.gain.value  = 1.0;
     this.doublerSum  = ctx.createGain(); this.doublerSum.gain.value  = 1.0;
@@ -326,9 +346,7 @@ export class AudioEngine {
     this.deEsserFilter.connect(this.pitchBypass);
     this.pitchBypass.connect(this.eqFilters[0]);
 
-    // ── 12. Gate (entry point) ────────────────────────────────────
-    this.gateGain = ctx.createGain();
-    this.gateGain.gain.value = 1.0;
+    // ── 12. Connect Gate to De-Esser ──────────────────────────────
     this.gateGain.connect(this.deEsserFilter);
   }
 
@@ -349,12 +367,15 @@ export class AudioEngine {
   }
 
   play(offset = 0): void {
-    if (!this.ctx || !this.audioBuffer) return;
+    if (!this.ctx || !this.audioBuffer || !this.gateGain) {
+      console.warn("[AudioEngine] Play aborted: engine not ready or no audio loaded");
+      return;
+    }
     this.stop();
 
     const src = this.ctx.createBufferSource();
     src.buffer = this.audioBuffer;
-    src.loop = this._looping;   // FIX #1 — was hardcoded false
+    src.loop = this._looping;
     src.connect(this.gateGain);
     src.start(0, offset);
     this.sourceNode = src;
