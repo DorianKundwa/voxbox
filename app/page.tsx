@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import { DropZone } from "@/components/upload/DropZone";
 import { WaveformView } from "@/components/upload/WaveformView";
 import { ChainRack } from "@/components/chain/ChainRack";
@@ -10,6 +11,203 @@ import { ABMonitor } from "@/components/monitor/ABMonitor";
 import { ExportPanel } from "@/components/export/ExportPanel";
 import { useAudioStore } from "@/store/audioStore";
 import { useChainStore } from "@/store/chainStore";
+import { useAnalysisStore } from "@/store/analysisStore";
+
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+type Step = "idle" | "analyzing_ref" | "analyzing_dry" | "comparing" | "building" | "done" | "error";
+
+const STEP_LABELS: Record<Step, string> = {
+  idle:          "Analyze & Match",
+  analyzing_ref: "Extracting reference features…",
+  analyzing_dry: "Extracting dry vocal features…",
+  comparing:     "Comparing audio profiles…",
+  building:      "Building effect chain…",
+  done:          "Chain Applied! ✓",
+  error:         "Error — Try Again",
+};
+
+const STEP_ICONS: Record<Step, string> = {
+  idle:          "🤖",
+  analyzing_ref: "🔬",
+  analyzing_dry: "🔬",
+  comparing:     "📊",
+  building:      "⚙️",
+  done:          "✅",
+  error:         "⚠️",
+};
+
+function AnalyzeButton() {
+  const [step, setStep] = useState<Step>("idle");
+  const { referenceFile, dryFile } = useAudioStore();
+  const { applyRecommendation } = useChainStore();
+  const { setReferenceFeatures, setDryFeatures, setError } = useAnalysisStore();
+
+  const ready = !!referenceFile && !!dryFile;
+  const busy  = step !== "idle" && step !== "done" && step !== "error";
+
+  const run = useCallback(async () => {
+    if (!referenceFile || !dryFile || busy) return;
+    setError(null);
+
+    try {
+      // Step 1 — analyze reference
+      setStep("analyzing_ref");
+      const fd1 = new FormData();
+      fd1.append("file", referenceFile);
+      const r1 = await fetch(`${API}/api/analyze`, { method: "POST", body: fd1 });
+      if (!r1.ok) throw new Error(await r1.text());
+      const refFeatures = (await r1.json()).features;
+      setReferenceFeatures(refFeatures);
+
+      // Step 2 — analyze dry
+      setStep("analyzing_dry");
+      const fd2 = new FormData();
+      fd2.append("file", dryFile);
+      const r2 = await fetch(`${API}/api/analyze`, { method: "POST", body: fd2 });
+      if (!r2.ok) throw new Error(await r2.text());
+      const dryFeatures = (await r2.json()).features;
+      setDryFeatures(dryFeatures);
+
+      // Step 3 — compare
+      setStep("comparing");
+      await new Promise((r) => setTimeout(r, 400)); // brief visual pause
+
+      // Step 4 — recommend + build chain
+      setStep("building");
+      const r3 = await fetch(`${API}/api/recommend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference_features: refFeatures, dry_features: dryFeatures, mode: "adapt" }),
+      });
+      if (!r3.ok) throw new Error(await r3.text());
+      const { chain } = await r3.json();
+      applyRecommendation(chain);
+
+      setStep("done");
+      setTimeout(() => setStep("idle"), 3000);
+    } catch (err: any) {
+      setError(err.message || "Analysis failed");
+      setStep("error");
+      setTimeout(() => setStep("idle"), 3000);
+    }
+  }, [referenceFile, dryFile, busy, applyRecommendation, setReferenceFeatures, setDryFeatures, setError]);
+
+  const isDone  = step === "done";
+  const isError = step === "error";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "16px 0" }}>
+      <button
+        onClick={run}
+        disabled={!ready || busy}
+        style={{
+          position: "relative",
+          padding: "14px 40px",
+          borderRadius: 12,
+          fontSize: 15,
+          fontWeight: 700,
+          letterSpacing: "0.03em",
+          cursor: ready && !busy ? "pointer" : "not-allowed",
+          border: "1px solid",
+          transition: "all 0.25s ease",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          minWidth: 280,
+          justifyContent: "center",
+          // colours
+          background: !ready
+            ? "rgba(255,255,255,0.04)"
+            : isDone
+            ? "rgba(57,255,20,0.15)"
+            : isError
+            ? "rgba(255,60,60,0.15)"
+            : busy
+            ? "rgba(124,58,237,0.15)"
+            : "linear-gradient(135deg, rgba(124,58,237,0.25), rgba(6,182,212,0.15))",
+          borderColor: !ready
+            ? "rgba(255,255,255,0.08)"
+            : isDone
+            ? "rgba(57,255,20,0.4)"
+            : isError
+            ? "rgba(255,60,60,0.4)"
+            : busy
+            ? "rgba(124,58,237,0.4)"
+            : "rgba(124,58,237,0.5)",
+          color: !ready
+            ? "var(--text-secondary)"
+            : isDone
+            ? "#39ff14"
+            : isError
+            ? "#ff4444"
+            : "var(--text-primary)",
+          boxShadow: ready && !busy && !isDone && !isError
+            ? "0 0 24px rgba(124,58,237,0.2), 0 0 60px rgba(124,58,237,0.05)"
+            : isDone
+            ? "0 0 20px rgba(57,255,20,0.2)"
+            : "none",
+          animation: ready && !busy && !isDone && !isError ? "pulse-glow 2s ease-in-out infinite" : "none",
+        }}
+      >
+        {/* Spinner for busy states */}
+        <span style={{
+          fontSize: 18,
+          display: "inline-block",
+          animation: busy ? "spin-slow 1s linear infinite" : "none",
+        }}>
+          {STEP_ICONS[step]}
+        </span>
+        <span>{STEP_LABELS[step]}</span>
+
+        {/* Progress shimmer on busy */}
+        {busy && (
+          <div style={{
+            position: "absolute",
+            inset: 0, borderRadius: 12,
+            background: "linear-gradient(90deg, transparent 0%, rgba(124,58,237,0.12) 50%, transparent 100%)",
+            backgroundSize: "200% 100%",
+            animation: "shimmer 1.4s linear infinite",
+            pointerEvents: "none",
+          }} />
+        )}
+      </button>
+
+      {/* Status sub-label */}
+      {!ready && (
+        <div style={{ fontSize: 11, color: "var(--text-secondary)", textAlign: "center" }}>
+          {!referenceFile && !dryFile ? "Upload both vocals to enable" :
+           !referenceFile ? "Upload a reference vocal" :
+           "Upload your dry vocal"}
+        </div>
+      )}
+
+      {/* Step progress pills */}
+      {busy && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {(["analyzing_ref", "analyzing_dry", "comparing", "building"] as Step[]).map((s, i) => {
+            const steps: Step[] = ["analyzing_ref", "analyzing_dry", "comparing", "building"];
+            const idx = steps.indexOf(step);
+            const done = i < idx;
+            const active = s === step;
+            return (
+              <div key={s} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{
+                  width: active ? 24 : 8,
+                  height: 8,
+                  borderRadius: 4,
+                  background: done ? "#39ff14" : active ? "#7c3aed" : "rgba(255,255,255,0.1)",
+                  transition: "all 0.3s ease",
+                  boxShadow: active ? "0 0 8px rgba(124,58,237,0.6)" : "none",
+                }} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Logo() {
   return (
@@ -154,6 +352,11 @@ export default function VoxBoxPage() {
               isPlaying={isPlaying && (monitorMode === "dry" || monitorMode === "processed")}
             />
           </div>
+        </div>
+
+        {/* ── Analyze Button ────────────────────────────────────────────────── */}
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>
+          <AnalyzeButton />
         </div>
 
         {/* ── Row 3: Main Content (Chain | Analysis Sidebar) ─────────────────── */}
