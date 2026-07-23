@@ -1,14 +1,15 @@
-"""
-voxbox_features_c.c  —  Python C extension
-Hot-path feature extraction: LUFS (K-weighted), RMS, peak, spectral centroid.
-Compiles 10-100x faster than pure Python/numpy for these specific paths.
-
-Build:
-    python setup.py build_ext --inplace
-
-Usage:
-    from voxbox_features_c import lufs_k_weighted, rms_db, peak_db, spectral_centroid
-"""
+/*
+ * voxbox_features_c.c  --  Python C extension
+ * Hot-path feature extraction: LUFS (K-weighted), RMS, peak, spectral centroid.
+ * Compiles 10-100x faster than pure Python/numpy for these specific paths.
+ *
+ * Build:
+ *   cd backend
+ *   python ..\native\setup.py build_ext --inplace --build-lib .
+ *
+ * Usage:
+ *   from voxbox_features_c import lufs_k_weighted, rms_db, peak_db, spectral_centroid
+ */
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
