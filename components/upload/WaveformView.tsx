@@ -7,34 +7,35 @@ interface WaveformViewProps {
   url: string | null;
   label: string;
   color?: string;
+  /** Pass the isPlaying state only for visual cursor tracking — WaveSurfer does NOT own playback */
   isPlaying?: boolean;
 }
 
-export function WaveformView({ url, label, color = "#7c3aed", isPlaying = false }: WaveformViewProps) {
+export function WaveformView({ url, label, color = "#7c3aed" }: WaveformViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const wsRef = useRef<WaveSurfer | null>(null);
+  const wsRef        = useRef<WaveSurfer | null>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
 
   useEffect(() => {
     if (!containerRef.current) return;
-
     wsRef.current?.destroy();
 
     const ws = WaveSurfer.create({
-      container: containerRef.current,
-      waveColor: `${color}60`,
+      container:     containerRef.current,
+      waveColor:     `${color}60`,
       progressColor: color,
-      cursorColor: "rgba(255,255,255,0.6)",
-      barWidth: 2,
-      barGap: 1,
-      barRadius: 2,
-      height: 56,
-      normalize: true,
-      interact: true,
+      cursorColor:   "rgba(255,255,255,0.4)",
+      barWidth:      2,
+      barGap:        1,
+      barRadius:     2,
+      height:        56,
+      normalize:     true,
+      interact:      false,   // display-only — AudioEngine owns playback
+      backend:       "WebAudio",
     });
 
-    ws.on("ready", () => setDuration(ws.getDuration()));
+    ws.on("ready",      () => setDuration(ws.getDuration()));
     ws.on("timeupdate", (t: number) => setCurrentTime(t));
     wsRef.current = ws;
 
@@ -42,12 +43,6 @@ export function WaveformView({ url, label, color = "#7c3aed", isPlaying = false 
 
     return () => ws.destroy();
   }, [url, color]);
-
-  useEffect(() => {
-    if (!wsRef.current) return;
-    if (isPlaying) wsRef.current.play();
-    else wsRef.current.pause();
-  }, [isPlaying]);
 
   const fmt = (t: number) => {
     const m = Math.floor(t / 60);

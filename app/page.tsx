@@ -16,7 +16,9 @@ import { useAudioStore } from "@/store/audioStore";
 import { useChainStore } from "@/store/chainStore";
 import { useAnalysisStore } from "@/store/analysisStore";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL
+  ? `${process.env.NEXT_PUBLIC_API_URL}/api`
+  : "/api";
 
 type Step = "idle" | "analyzing_ref" | "analyzing_dry" | "comparing" | "building" | "done" | "error";
 
@@ -58,7 +60,7 @@ function AnalyzeButton() {
       setStep("analyzing_ref");
       const fd1 = new FormData();
       fd1.append("file", referenceFile);
-      const r1 = await fetch(`${API}/api/analyze`, { method: "POST", body: fd1 });
+      const r1 = await fetch(`${API_BASE}/analyze`, { method: "POST", body: fd1 });
       if (!r1.ok) throw new Error(await r1.text());
       const refFeatures = (await r1.json()).features;
       setReferenceFeatures(refFeatures);
@@ -67,7 +69,7 @@ function AnalyzeButton() {
       setStep("analyzing_dry");
       const fd2 = new FormData();
       fd2.append("file", dryFile);
-      const r2 = await fetch(`${API}/api/analyze`, { method: "POST", body: fd2 });
+      const r2 = await fetch(`${API_BASE}/analyze`, { method: "POST", body: fd2 });
       if (!r2.ok) throw new Error(await r2.text());
       const dryFeatures = (await r2.json()).features;
       setDryFeatures(dryFeatures);
@@ -78,7 +80,7 @@ function AnalyzeButton() {
 
       // Step 4 — recommend + build chain
       setStep("building");
-      const r3 = await fetch(`${API}/api/recommend`, {
+      const r3 = await fetch(`${API_BASE}/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reference_features: refFeatures, dry_features: dryFeatures, mode: "adapt" }),

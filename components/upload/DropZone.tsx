@@ -5,18 +5,22 @@ import { useAudioStore } from "@/store/audioStore";
 import { useAnalysisStore } from "@/store/analysisStore";
 import { useChainStore } from "@/store/chainStore";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// In dev, Next.js proxies /api/* → http://localhost:8000/api/* (see next.config.ts)
+// In prod, NEXT_PUBLIC_API_URL should point to the deployed backend
+const API_BASE = process.env.NEXT_PUBLIC_API_URL
+  ? `${process.env.NEXT_PUBLIC_API_URL}/api`
+  : "/api";
 
 async function analyzeFile(file: File) {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await fetch(`${API}/api/analyze`, { method: "POST", body: formData });
+  const res = await fetch(`${API_BASE}/analyze`, { method: "POST", body: formData });
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()).features;
 }
 
 async function getRecommendation(refFeatures: any, dryFeatures: any, mode: string) {
-  const res = await fetch(`${API}/api/recommend`, {
+  const res = await fetch(`${API_BASE}/recommend`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ reference_features: refFeatures, dry_features: dryFeatures, mode }),

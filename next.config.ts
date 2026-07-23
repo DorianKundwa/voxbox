@@ -1,32 +1,29 @@
 import type { NextConfig } from "next";
-import path from "path";
 
 const nextConfig: NextConfig = {
-  turbopack: {
-    root: path.resolve(__dirname),
-  },
-  // Required for AudioWorklet + SharedArrayBuffer
+  // Required for AudioWorklet SharedArrayBuffer + WASM
   async headers() {
     return [
       {
         source: "/(.*)",
         headers: [
-          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Opener-Policy",  value: "same-origin" },
           { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+          { key: "X-Content-Type-Options",       value: "nosniff" },
         ],
       },
     ];
   },
-  // Allow backend API calls in development
+
+  // Dev: proxy /api/* → FastAPI backend at :8000
   async rewrites() {
-    return process.env.NODE_ENV === "development"
-      ? [
-          {
-            source: "/api-proxy/:path*",
-            destination: "http://localhost:8000/:path*",
-          },
-        ]
-      : [];
+    if (process.env.NODE_ENV !== "development") return [];
+    return [
+      {
+        source:      "/api/:path*",
+        destination: "http://localhost:8000/api/:path*",
+      },
+    ];
   },
 };
 
