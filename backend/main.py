@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-from routers import analyze, recommend, health
+from routers import analyze, recommend, health, feedback
 
 _start_time = time.time()
 
@@ -32,6 +32,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(analyze.router, prefix="/api")
 app.include_router(recommend.router, prefix="/api")
+app.include_router(feedback.router, prefix="/api")
 
 
 @app.get("/")

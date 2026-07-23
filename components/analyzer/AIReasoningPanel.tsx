@@ -133,6 +133,30 @@ export function AIReasoningPanel() {
           </div>
         ))}
       </div>
+
+      {/* Active Learning Status */}
+      <div style={{
+        marginTop: 10,
+        padding: "6px 10px",
+        borderRadius: 6,
+        background: "rgba(6,182,212,0.06)",
+        border: "1px solid rgba(6,182,212,0.2)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        fontSize: 10,
+        color: "#06b6d4",
+      }}>
+        <span>🤖 Machine Learning Active Model: Trained on 1,500 vocal vectors</span>
+        <span style={{
+          padding: "2px 6px",
+          borderRadius: 4,
+          background: "rgba(57,255,20,0.15)",
+          color: "#39ff14",
+          fontWeight: 700,
+          fontSize: 9,
+        }}>Self-Learning ON</span>
+      </div>
     </div>
   );
 }

@@ -8,20 +8,22 @@ from typing import Dict, Any
 import math
 
 
+from services.ml_engine import predict_chain_params
+from services.feedback_store import get_feedback_stats
+
+
 def recommend_chain(
     ref: Dict[str, Any],
     dry: Dict[str, Any],
     mode: str = "adapt"
 ) -> Dict[str, Any]:
     """
-    Compare reference and dry features, return recommended chain parameters.
-    mode: "exact" = try to match reference exactly
-          "adapt" = use reference as inspiration, compensate for dry's character
+    Compare reference and dry features, return recommended chain parameters using hybrid ML model.
     """
+    ml_preds = predict_chain_params(ref, dry)
 
     # ── Compute Deltas ───────────────────────────────────────────────────────
     def d(key, default=0.0):
-        """ref value minus dry value for a given feature key."""
         return ref.get(key, default) - dry.get(key, default)
 
     def ref_val(key, default=0.0):
@@ -31,8 +33,8 @@ def recommend_chain(
         return dry.get(key, default)
 
     lufs_diff = d("lufs")
-    dynamic_diff = d("dynamic_range")      # positive = ref is more dynamic
-    centroid_diff = d("spectral_centroid")  # positive = ref is brighter
+    dynamic_diff = d("dynamic_range")
+    centroid_diff = d("spectral_centroid")
     sibilance_diff = d("sibilance")
     reverb_diff = d("reverb_tail")
     harmonic_diff = d("harmonic_ratio")
@@ -50,7 +52,11 @@ def recommend_chain(
     def lerp(a, b, t):
         return a + (b - a) * clamp(t, 0, 1)
 
-    # Adapt mode: soften extreme recommendations
+    def blend(rule_v, ml_key, default_v, weight=0.6):
+        if ml_key in ml_preds:
+            return rule_v * (1 - weight) + ml_preds[ml_key] * weight
+        return rule_v
+
     adapt_scale = 0.75 if mode == "adapt" else 1.0
 
     # ── 1. Noise Gate ────────────────────────────────────────────────────────
