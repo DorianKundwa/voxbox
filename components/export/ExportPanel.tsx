@@ -294,16 +294,21 @@ async function exportMP3(): Promise<void> {
     }
 
     const chunkSize = 1152;
-    const mp3Data: ArrayBuffer[] = [];
+    const rawChunks: number[] = [];
     for (let i = 0; i < int16.length; i += chunkSize) {
-      const chunk = int16.subarray(i, i + chunkSize);
+      const chunk   = int16.subarray(i, i + chunkSize);
       const encoded = encoder.encodeBuffer(chunk);
-      if (encoded.length > 0) mp3Data.push(encoded.buffer.slice(0));
+      for (let j = 0; j < encoded.length; j++) rawChunks.push(encoded[j]);
     }
     const tail = encoder.flush();
-    if (tail.length > 0) mp3Data.push(tail.buffer.slice(0));
+    for (let j = 0; j < tail.length; j++) rawChunks.push(tail[j]);
 
-    const blob = new Blob(mp3Data, { type: "audio/mp3" });
+    // Build a plain ArrayBuffer — avoids ArrayBufferLike/SharedArrayBuffer ambiguity
+    const finalBuf = new ArrayBuffer(rawChunks.length);
+    const view     = new Uint8Array(finalBuf);
+    rawChunks.forEach((b, i) => { view[i] = b & 0xff; });
+
+    const blob = new Blob([finalBuf], { type: "audio/mp3" });
     const url  = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
