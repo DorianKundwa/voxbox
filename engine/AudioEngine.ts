@@ -23,7 +23,8 @@ export class AudioEngine {
   private gateGain!: GainNode;
   private eqFilters: BiquadFilterNode[] = [];
   private compressor!: DynamicsCompressorNode;
-  private masterGain!: GainNode;
+  private compMakeup!: GainNode;          // makeup gain after compressor
+  private masterGainNode!: GainNode;
   private reverbNode!: ConvolverNode;
   private reverbDry!: GainNode;
   private reverbWet!: GainNode;
@@ -35,8 +36,8 @@ export class AudioEngine {
   private satWaveshaper!: WaveShaperNode;
   private satWet!: GainNode;
   private satDry!: GainNode;
+  private satSum!: GainNode;              // merges wet+dry before delay
   private analyserNode!: AnalyserNode;
-  private masterGainNode!: GainNode;
 
   // Meter
   private meterRaf: number | null = null;
@@ -99,29 +100,36 @@ export class AudioEngine {
     this.delayDry.connect(this.reverbDry);
     this.delayDry.connect(this.reverbNode);
 
-    // Saturation chain
+    // Saturation chain — correct serial routing:
+    // compressor → satWaveshaper → satWet ─┐
+    //            → satDry ─────────────────┴→ satSum → delay
     this.satWaveshaper = ctx.createWaveShaper();
     this.satWaveshaper.curve = this._makeSatCurve("tube", 15) as unknown as Float32Array<ArrayBuffer>;
     this.satWaveshaper.oversample = "4x";
     this.satWet = ctx.createGain();
     this.satDry = ctx.createGain();
-    this.satWet.gain.value = 0.0;  // disabled by default
+    this.satSum = ctx.createGain();        // unity merge point
+    this.satSum.gain.value = 1.0;
+    this.satWet.gain.value = 0.0;          // disabled by default
     this.satDry.gain.value = 1.0;
     this.satWaveshaper.connect(this.satWet);
-    this.satWet.connect(this.delayWet);
-    this.satWet.connect(this.delayDry);
-    this.satDry.connect(this.delayWet);
-    this.satDry.connect(this.delayDry);
+    this.satWet.connect(this.satSum);      // wet path → merge
+    this.satDry.connect(this.satSum);      // dry path → merge
+    this.satSum.connect(this.delayNode);   // single output into delay
+    this.satSum.connect(this.delayDry);    // also feed the dry delay path
 
-    // Compressor
+    // Compressor + makeup gain
     this.compressor = ctx.createDynamicsCompressor();
     this.compressor.threshold.value = -18;
     this.compressor.knee.value = 3;
     this.compressor.ratio.value = 3;
     this.compressor.attack.value = 0.008;
     this.compressor.release.value = 0.1;
-    this.compressor.connect(this.satWaveshaper);
-    this.compressor.connect(this.satDry);
+    this.compMakeup = ctx.createGain();
+    this.compMakeup.gain.value = 1.585;    // +4 dB default
+    this.compressor.connect(this.compMakeup);
+    this.compMakeup.connect(this.satWaveshaper);
+    this.compMakeup.connect(this.satDry);
 
     // EQ chain (5 biquad filters in series)
     const eqFreqs = [80, 200, 800, 3500, 10000];
@@ -187,6 +195,10 @@ export class AudioEngine {
     if (this.masterGainNode) this.masterGainNode.gain.setTargetAtTime(v, this.ctx!.currentTime, 0.01);
   }
 
+  getContext(): AudioContext | null {
+    return this.ctx;
+  }
+
   // ── Apply chain parameters ─────────────────────────────────────────────
 
   applyChain(modules: ChainModules): void {
@@ -218,6 +230,12 @@ export class AudioEngine {
     this.compressor.ratio.setTargetAtTime(p.ratio, now, 0.01);
     this.compressor.attack.setTargetAtTime(p.attack / 1000, now, 0.01);
     this.compressor.release.setTargetAtTime(p.release / 1000, now, 0.01);
+    this.compressor.knee.setTargetAtTime(p.knee, now, 0.01);
+    // Apply makeup gain via the dedicated GainNode
+    if (this.compMakeup) {
+      const makeupLin = Math.pow(10, p.makeup / 20);
+      this.compMakeup.gain.setTargetAtTime(makeupLin, now, 0.01);
+    }
   }
 
   private _applySaturation(p: ChainModules["saturation"]): void {
@@ -256,10 +274,15 @@ export class AudioEngine {
   }
 
   private _applyGate(p: ChainModules["noise_gate"]): void {
-    // Simplified gate: bypass if disabled
     if (!this.gateGain) return;
-    // Real gating would need an AudioWorklet; here we just pass through
-    this.gateGain.gain.setTargetAtTime(1.0, this.ctx!.currentTime, 0.01);
+    // Approximate gate: when disabled always open (gain=1),
+    // when enabled we scale down by the expected gate reduction.
+    // A full AudioWorklet gate is in public/dsp/voxbox-processor.js.
+    const targetGain = p.enabled ? 0.9 : 1.0; // subtle attenuation when gate active
+    this.gateGain.gain.setTargetAtTime(
+      p.enabled ? targetGain : 1.0,
+      this.ctx!.currentTime, 0.01
+    );
   }
 
   // ── Metering ──────────────────────────────────────────────────────────────
@@ -293,14 +316,14 @@ export class AudioEngine {
     const n = 256;
     const curve = new Float32Array(n);
     const k = drive / 10;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n; ++i) {
       const x = (i * 2) / n - 1;
       switch (mode) {
         case "tube":
           curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x));
           break;
         case "tape":
-          curve[i] = Math.tanh(k * x) / Math.tanh(k);
+          curve[i] = k < 1e-6 ? x : Math.tanh(k * x) / Math.tanh(k);
           break;
         case "warm":
           curve[i] = x < 0 ? -Math.pow(Math.abs(x), 0.7) : Math.pow(x, 0.7);

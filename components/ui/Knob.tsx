@@ -106,15 +106,19 @@ export function Knob({
     [value, min, max, onChange, clampStep]
   );
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
+  // Fix: attach wheel as non-passive via native addEventListener (React attaches passive by default)
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
       e.preventDefault();
       const dir = e.deltaY < 0 ? 1 : -1;
       const delta = e.shiftKey ? step : step * 5;
       onChange(clampStep(value + dir * delta));
-    },
-    [value, step, onChange, clampStep]
-  );
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, [value, step, onChange, clampStep]);
 
   const onDblClick = useCallback(() => {
     // Reset to center
@@ -147,7 +151,6 @@ export function Knob({
         width={svgSize}
         height={svgSize}
         onMouseDown={onMouseDown}
-        onWheel={onWheel}
         onContextMenu={onContextMenu}
         style={{ cursor: "ns-resize", userSelect: "none" }}
         className={learning ? "midi-learning" : ""}

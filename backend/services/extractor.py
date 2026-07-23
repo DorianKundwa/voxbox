@@ -6,6 +6,7 @@ Extracts a comprehensive set of vocal features for AI chain matching.
 import numpy as np
 import librosa
 import scipy.signal as signal
+import pyloudnorm as pyln
 from typing import Dict, Any
 import warnings
 warnings.filterwarnings("ignore")
@@ -29,24 +30,31 @@ def extract_features(path: str) -> Dict[str, Any]:
     # ── Loudness & Dynamics ──────────────────────────────────────────────────
     rms = float(np.sqrt(np.mean(y_trimmed ** 2)))
     peak = float(np.max(np.abs(y_trimmed)))
-    dynamic_range = float(20 * np.log10(peak / (rms + 1e-9)))
+    # Crest factor: ratio of peak to RMS
     crest_factor = float(20 * np.log10(peak / (rms + 1e-9)))
+    # Dynamic range: loudest - quietest frame (true perceptual range)
+    frame_rms = librosa.feature.rms(y=y_trimmed, frame_length=2048, hop_length=512)[0]
+    frame_rms_db = 20 * np.log10(frame_rms + 1e-9)
+    dynamic_range = float(np.percentile(frame_rms_db, 95) - np.percentile(frame_rms_db, 5))
 
-    # LUFS approximation (ITU-R BS.1770 simplified)
-    lufs = _estimate_lufs(y_trimmed, sr)
+    # LUFS — ITU-R BS.1770-4 via pyloudnorm (gated, K-weighted)
+    meter = pyln.Meter(sr)  # creates BS.1770 meter at file sample rate
+    lufs = float(meter.integrated_loudness(y_trimmed.astype(np.float64)))
+    if not np.isfinite(lufs):
+        lufs = -70.0  # silence / too-short signal
 
     # Noise floor estimate (from quietest 10% of frames)
-    frame_rms = librosa.feature.rms(y=y_trimmed, frame_length=2048, hop_length=512)[0]
-    noise_floor = float(20 * np.log10(np.percentile(frame_rms, 10) + 1e-9))
+    noise_floor = float(np.percentile(frame_rms_db, 10))
 
-    # ── Spectral Features ────────────────────────────────────────────────────
-    stft = np.abs(librosa.stft(y_trimmed, n_fft=2048, hop_length=512))
+    # ── Spectral Features (power spectrogram for accuracy) ───────────────────
+    stft_mag = np.abs(librosa.stft(y_trimmed, n_fft=2048, hop_length=512))
+    stft = stft_mag ** 2  # power spectrogram
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
 
-    spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(S=stft, sr=sr)))
-    spectral_rolloff = float(np.mean(librosa.feature.spectral_rolloff(S=stft, sr=sr)))
-    spectral_flux = float(np.mean(np.diff(stft, axis=1) ** 2))
-    spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(S=stft, sr=sr)))
+    spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(S=stft_mag, sr=sr)))
+    spectral_rolloff  = float(np.mean(librosa.feature.spectral_rolloff(S=stft_mag, sr=sr)))
+    spectral_flux     = float(np.mean(np.diff(stft_mag, axis=1) ** 2))
+    spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(S=stft_mag, sr=sr)))
 
     # Frequency balance: energy in bands
     def band_energy(lo, hi):
@@ -80,10 +88,12 @@ def extract_features(path: str) -> Dict[str, Any]:
         y_trimmed, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"),
         frame_length=2048
     )
-    voiced_f0 = f0[voiced_flag] if voiced_flag is not None else f0[~np.isnan(f0)]
-    pitch_mean = float(np.nanmean(voiced_f0)) if len(voiced_f0) > 0 else 0.0
-    pitch_variance = float(np.nanstd(voiced_f0)) if len(voiced_f0) > 0 else 0.0
-    voiced_ratio = float(np.sum(voiced_flag) / len(voiced_flag)) if voiced_flag is not None else 0.5
+    # voiced_flag is always a numpy bool array from pyin
+    voiced_f0 = f0[voiced_flag] if (voiced_flag is not None and voiced_flag.any()) else np.array([])
+    voiced_f0 = voiced_f0[~np.isnan(voiced_f0)]  # strip any remaining NaN
+    pitch_mean     = float(np.mean(voiced_f0))    if len(voiced_f0) > 0 else 0.0
+    pitch_variance = float(np.std(voiced_f0))     if len(voiced_f0) > 0 else 0.0
+    voiced_ratio   = float(np.sum(voiced_flag) / len(voiced_flag)) if (voiced_flag is not None and len(voiced_flag) > 0) else 0.0
 
     # ── Harmonics & Noise ────────────────────────────────────────────────────
     harmonic, percussive = librosa.effects.hpss(y_trimmed)
@@ -157,36 +167,11 @@ def extract_features(path: str) -> Dict[str, Any]:
     }
 
 
-def _estimate_lufs(y: np.ndarray, sr: int) -> float:
-    """
-    Simplified ITU-R BS.1770-4 LUFS estimation (no gating for brevity).
-    """
-    # K-weighting filter approximation
-    # Stage 1: High-shelf pre-filter
-    b1, a1 = signal.bilinear(
-        [1.53512485958697, -2.69169618940638, 1.19839281085285],
-        [1.0, -1.69065929318241, 0.73248077421585],
-        fs=sr
-    )
-    # Stage 2: High-pass filter
-    b2, a2 = signal.bilinear(
-        [1.0, -2.0, 1.0],
-        [1.0, -1.99004745483398, 0.99007225036621],
-        fs=sr
-    )
-    y_k = signal.lfilter(b1, a1, y)
-    y_k = signal.lfilter(b2, a2, y_k)
-    mean_sq = np.mean(y_k ** 2)
-    lufs = -0.691 + 10 * np.log10(mean_sq + 1e-9)
-    return float(lufs)
-
-
 def _estimate_reverb(y: np.ndarray, sr: int) -> float:
     """
     Estimate reverb tail length via normalized autocorrelation decay.
     Returns a 0-1 score.
     """
-    # Use last 20% of audio (where reverb tail would be most apparent)
     tail_start = int(len(y) * 0.8)
     tail = y[tail_start:]
     if len(tail) < 1024:
@@ -194,5 +179,4 @@ def _estimate_reverb(y: np.ndarray, sr: int) -> float:
     rms_tail = float(np.sqrt(np.mean(tail ** 2)))
     rms_full = float(np.sqrt(np.mean(y ** 2)))
     ratio = rms_tail / (rms_full + 1e-9)
-    # Normalize: higher ratio = more reverb tail
     return float(min(1.0, ratio * 5.0))

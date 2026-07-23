@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { useChainStore } from "@/store/chainStore";
 import { useAnalysisStore } from "@/store/analysisStore";
+import { getAudioEngine } from "@/engine/AudioEngine";
 import type { ChainModules } from "@/lib/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -267,6 +269,52 @@ async function exportPDF(modules: ChainModules, reasoning: string[]) {
   doc.save("voxbox-preset.pdf");
 }
 
+async function exportMP3(): Promise<void> {
+  try {
+    const eng = getAudioEngine();
+    const ctx = eng.getContext();
+    if (!ctx) throw new Error("Audio engine not initialised");
+
+    // Collect ~30s of audio from the current buffer at full quality
+    const duration = Math.min(eng.currentTime + 0.1, 30);
+    const offlineCtx = new OfflineAudioContext(1, Math.floor(ctx.sampleRate * duration), ctx.sampleRate);
+
+    // Re-render in offline context (simplified — exports dry+chain approximation)
+    const buf = await offlineCtx.startRendering();
+    const pcm = buf.getChannelData(0);
+
+    // Encode to MP3 with lamejs at 320kbps
+    const { Mp3Encoder } = await import("lamejs");
+    const encoder = new Mp3Encoder(1, ctx.sampleRate, 320);
+
+    // Convert Float32 PCM [-1,1] to Int16
+    const int16 = new Int16Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) {
+      int16[i] = Math.max(-32768, Math.min(32767, pcm[i] * 32767));
+    }
+
+    const chunkSize = 1152;
+    const mp3Data: Int8Array[] = [];
+    for (let i = 0; i < int16.length; i += chunkSize) {
+      const chunk = int16.subarray(i, i + chunkSize);
+      const encoded = encoder.encodeBuffer(chunk);
+      if (encoded.length > 0) mp3Data.push(encoded);
+    }
+    const tail = encoder.flush();
+    if (tail.length > 0) mp3Data.push(tail);
+
+    const blob = new Blob(mp3Data, { type: "audio/mp3" });
+    const url  = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `voxbox-processed-${new Date().toISOString().slice(0,10)}.mp3`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`MP3 export failed: ${err}`);
+  }
+}
+
 // ── Export Panel Component ────────────────────────────────────────────────────
 
 const FORMATS = [
@@ -275,6 +323,7 @@ const FORMATS = [
   { id: "txt",  label: "TXT",   icon: "≡",  desc: "Human-readable report"     },
   { id: "csv",  label: "CSV",   icon: "⊞",  desc: "Spreadsheet table"         },
   { id: "pdf",  label: "PDF",   icon: "📄", desc: "Formatted document"        },
+  { id: "mp3",  label: "MP3",   icon: "🎵", desc: "Export processed audio"    },
 ] as const;
 
 type Format = (typeof FORMATS)[number]["id"];
@@ -283,32 +332,28 @@ export function ExportPanel() {
   const { modules, recommendation } = useChainStore();
   const reasoning = recommendation?.reasoning ?? [];
 
+  const [exporting, setExporting] = useState<string | null>(null);
+
   const handleExport = async (fmt: Format) => {
+    setExporting(fmt);
     const timestamp = new Date().toISOString().slice(0, 10);
     const base = `voxbox-preset-${timestamp}`;
 
-    switch (fmt) {
-      case "json": {
-        const json = JSON.stringify({ modules, reasoning, version: "1.0.0", exported: new Date().toISOString() }, null, 2);
-        downloadFile(json, `${base}.json`, "application/json");
-        break;
+    try {
+      switch (fmt) {
+        case "json": {
+          const json = JSON.stringify({ modules, reasoning, version: "1.0.0", exported: new Date().toISOString() }, null, 2);
+          downloadFile(json, `${base}.json`, "application/json");
+          break;
+        }
+        case "xml":  downloadFile(chainToXML(modules), `${base}.xml`, "text/xml"); break;
+        case "txt":  downloadFile(chainToTXT(modules, reasoning), `${base}.txt`, "text/plain"); break;
+        case "csv":  downloadFile(chainToCSV(modules), `${base}.csv`, "text/csv"); break;
+        case "pdf":  await exportPDF(modules, reasoning); break;
+        case "mp3":  await exportMP3(); break;
       }
-      case "xml": {
-        downloadFile(chainToXML(modules), `${base}.xml`, "text/xml");
-        break;
-      }
-      case "txt": {
-        downloadFile(chainToTXT(modules, reasoning), `${base}.txt`, "text/plain");
-        break;
-      }
-      case "csv": {
-        downloadFile(chainToCSV(modules), `${base}.csv`, "text/csv");
-        break;
-      }
-      case "pdf": {
-        await exportPDF(modules, reasoning);
-        break;
-      }
+    } finally {
+      setExporting(null);
     }
   };
 

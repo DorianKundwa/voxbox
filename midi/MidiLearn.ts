@@ -1,119 +1,152 @@
+/**
+ * MidiLearn — powered by the `webmidi` npm package.
+ *
+ * Provides:
+ *  - useWebMidi()       React hook for MIDI status
+ *  - useMidiLearn()     Knob MIDI-learn hook
+ *  - Global CC routing  (channel-aware, fixes audit bug #9)
+ */
+
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from "react";
 
-type LearnCallback = (cc: number, value: number) => void;
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-interface MidiMapping {
-  cc: number;
-  channel: number;
+export interface MidiMapping {
+  cc:      number;
+  channel: number;  // 1-16
 }
 
-const STORAGE_KEY = "voxbox-midi-mappings";
+type KnobCallback = (cc: number, value: number) => void;
 
-function loadMappings(): Record<string, MidiMapping> {
+// ── Module-level state (singleton across renders) ──────────────────────────
+
+let _enabled    = false;
+let _webmidi: any = null;   // lazy-loaded webmidi instance
+
+const _mappings:  Record<string, MidiMapping>  = {};
+const _callbacks: Record<string, KnobCallback> = {};
+const _listeners: Set<() => void>              = new Set();
+let   _learning:  string | null                = null;
+
+function _notify() { _listeners.forEach(fn => fn()); }
+
+// ── Init: lazy-load webmidi and start listening ───────────────────────────
+
+async function _initWebMidi() {
+  if (_webmidi || typeof window === "undefined") return;
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-  } catch {
-    return {};
+    const { WebMidi } = await import("webmidi");
+    await WebMidi.enable({ sysex: false });
+
+    _webmidi = WebMidi;
+    _enabled = true;
+    _notify();
+
+    // Listen to all inputs for CC messages, channel-aware
+    WebMidi.inputs.forEach(input => _attachInput(input));
+
+    // Re-attach when inputs connect later
+    WebMidi.addListener("connected", ({ port }: any) => {
+      if (port.type === "input") _attachInput(port);
+      _notify();
+    });
+    WebMidi.addListener("disconnected", () => _notify());
+  } catch (err) {
+    console.warn("[MidiLearn] webmidi init failed:", err);
+    _enabled = false;
+    _notify();
   }
 }
 
-function saveMappings(m: Record<string, MidiMapping>) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(m));
-}
+function _attachInput(input: any) {
+  // Listen on all channels
+  for (let ch = 1; ch <= 16; ch++) {
+    input.addListener("controlchange", (e: any) => {
+      const cc      = e.controller.number as number;
+      const value   = e.rawValue      as number;
+      const channel = e.message.channel as number;
 
-// Global MIDI state (shared across components)
-let globalMappings: Record<string, MidiMapping> = {};
-let globalCallbacks: Record<string, LearnCallback> = {};
-let learningKnobId: string | null = null;
-let learningCallback: LearnCallback | null = null;
-let listeners: Array<() => void> = [];
+      // --- MIDI Learn capture ---
+      if (_learning) {
+        const id = _learning;
+        _mappings[id]  = { cc, channel };
+        _learning      = null;
+        _notify();
+        // Immediately route this value too
+        _callbacks[id]?.(cc, value);
+        return;
+      }
 
-function notifyListeners() {
-  listeners.forEach((fn) => fn());
-}
-
-if (typeof window !== "undefined") {
-  globalMappings = loadMappings();
-
-  (navigator as any).requestMIDIAccess?.({ sysex: false }).then(
-    (access: any) => {
-      const setupInput = (input: any) => {
-        input.onmidimessage = (ev: any) => {
-          const [status, cc, value] = ev.data as [number, number, number];
-          const isCC = (status & 0xf0) === 0xb0;
-          if (!isCC) return;
-
-          const channel = status & 0x0f;
-
-          // Learning mode
-          if (learningKnobId && learningCallback) {
-            globalMappings[learningKnobId] = { cc, channel };
-            saveMappings(globalMappings);
-            globalCallbacks[learningKnobId] = learningCallback;
-            learningCallback(cc, value);
-            learningKnobId = null;
-            learningCallback = null;
-            notifyListeners();
-            return;
-          }
-
-          // Route to mapped knobs
-          Object.entries(globalMappings).forEach(([knobId, mapping]) => {
-            if (mapping.cc === cc) {
-              const cb = globalCallbacks[knobId];
-              if (cb) cb(cc, value);
-            }
-          });
-        };
-      };
-
-      access.inputs.forEach(setupInput);
-      access.onstatechange = (e: any) => {
-        if (e.port.type === "input" && e.port.state === "connected") {
-          setupInput(e.port);
+      // --- Normal routing: channel-aware (fixes audit bug #9) ---
+      Object.entries(_mappings).forEach(([knobId, mapping]) => {
+        if (mapping.cc === cc && mapping.channel === channel) {
+          _callbacks[knobId]?.(cc, value);
         }
-      };
-    },
-    (err: Error) => {
-      console.warn("WebMIDI not available:", err.message);
-    }
-  );
+      });
+    }, { channels: ch });
+  }
 }
 
+// ── Store snapshot for useSyncExternalStore ───────────────────────────────
+
+interface MidiState {
+  enabled:  boolean;
+  inputs:   string[];
+  mappings: Record<string, MidiMapping>;
+  learning: string | null;
+}
+
+function _getSnapshot(): MidiState {
+  return {
+    enabled:  _enabled,
+    inputs:   _webmidi?.inputs?.map((i: any) => i.name) ?? [],
+    mappings: { ..._mappings },
+    learning: _learning,
+  };
+}
+
+// ── Public hooks ──────────────────────────────────────────────────────────
+
+/** Initialise WebMIDI and expose connection state. */
+export function useWebMidi() {
+  const state = useSyncExternalStore(
+    (cb) => { _listeners.add(cb); return () => _listeners.delete(cb); },
+    _getSnapshot,
+    () => ({ enabled: false, inputs: [], mappings: {}, learning: null } satisfies MidiState)
+  );
+
+  useEffect(() => { _initWebMidi(); }, []);
+  return state;
+}
+
+/** Per-knob hook: registers a callback and exposes learn/clear helpers. */
 export function useMidiLearn() {
-  const [, forceUpdate] = useState(0);
+  const state = useSyncExternalStore(
+    (cb) => { _listeners.add(cb); return () => _listeners.delete(cb); },
+    _getSnapshot,
+    () => ({ enabled: false, inputs: [], mappings: {}, learning: null } satisfies MidiState)
+  );
 
-  useEffect(() => {
-    const fn = () => forceUpdate((n) => n + 1);
-    listeners.push(fn);
-    return () => { listeners = listeners.filter((l) => l !== fn); };
-  }, []);
+  useEffect(() => { _initWebMidi(); }, []);
 
-  const learnKnob = useCallback((id: string, cb: LearnCallback) => {
-    if (learningKnobId === id) {
-      // Cancel learning
-      learningKnobId = null;
-      learningCallback = null;
-    } else {
-      learningKnobId = id;
-      learningCallback = cb;
-      globalCallbacks[id] = cb;
-    }
-    notifyListeners();
+  const learnKnob = useCallback((id: string, cb: KnobCallback) => {
+    _callbacks[id] = cb;
+    _learning      = id;
+    _notify();
   }, []);
 
   const clearMapping = useCallback((id: string) => {
-    delete globalMappings[id];
-    delete globalCallbacks[id];
-    saveMappings(globalMappings);
-    notifyListeners();
+    delete _mappings[id];
+    delete _callbacks[id];
+    _notify();
   }, []);
 
   return {
-    mappings: globalMappings,
-    isLearning: learningKnobId,
+    isLearning:   state.learning,
+    mappings:     state.mappings,
+    enabled:      state.enabled,
     learnKnob,
     clearMapping,
   };

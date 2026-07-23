@@ -23,6 +23,7 @@ async def analyze_vocal(file: UploadFile = File(...)):
     if ext not in allowed:
         raise HTTPException(status_code=400, detail=f"Unsupported format: {ext}")
 
+    tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(await file.read())
@@ -35,5 +36,5 @@ async def analyze_vocal(file: UploadFile = File(...)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)

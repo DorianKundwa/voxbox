@@ -8,6 +8,8 @@ import { SpectrumAnalyzer } from "@/components/analyzer/SpectrumAnalyzer";
 import { FeaturePanel } from "@/components/analyzer/FeaturePanel";
 import { AIReasoningPanel } from "@/components/analyzer/AIReasoningPanel";
 import { ABMonitor } from "@/components/monitor/ABMonitor";
+import { LUFSMeter } from "@/components/monitor/LUFSMeter";
+import { PitchDisplay } from "@/components/monitor/PitchDisplay";
 import { ExportPanel } from "@/components/export/ExportPanel";
 import { useAudioStore } from "@/store/audioStore";
 import { useChainStore } from "@/store/chainStore";
@@ -321,14 +323,16 @@ export default function VoxBoxPage() {
       {/* ── Main Layout ─────────────────────────────────────────────────────── */}
       <div style={{ maxWidth: 1600, margin: "0 auto", padding: "20px 20px 40px" }}>
 
-        {/* ── Row 1: Spectrum + Monitor ─────────────────────────────────────── */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 12, marginBottom: 12 }}>
+        {/* ── Row 1: Spectrum + LUFS + Pitch + Monitor ──────────────────────── */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto 280px", gap: 12, marginBottom: 12, alignItems: "start" }}>
           <div>
             <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>
-              ⚡ Real-Time Spectrum
+              ⚡ Real-Time Spectrum (D3 · log scale · peak hold)
             </div>
             <SpectrumAnalyzer height={80} />
           </div>
+          <LUFSMeter />
+          <PitchDisplay />
           <ABMonitor />
         </div>
 
