@@ -56,9 +56,14 @@ export function Knob({
   const norm = (v: number) => (v - min) / (max - min);
   const angle = startAngle + norm(value) * (endAngle - startAngle);
 
+  const formatNum = (n: number) => Math.round(n * 1000) / 1000;
+
   const polarToXY = (angleDeg: number, radius: number) => {
     const rad = ((angleDeg - 90) * Math.PI) / 180;
-    return { x: cx + radius * Math.cos(rad), y: cy + radius * Math.sin(rad) };
+    return {
+      x: formatNum(cx + radius * Math.cos(rad)),
+      y: formatNum(cy + radius * Math.sin(rad)),
+    };
   };
 
   const arcPath = (startA: number, endA: number, radius: number) => {
@@ -69,6 +74,9 @@ export function Knob({
   };
 
   const indicator = polarToXY(angle, r - stroke / 2);
+
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; });
 
   const clampStep = useCallback(
     (v: number) => {
@@ -93,7 +101,7 @@ export function Knob({
         const range = max - min;
         const sensitivity = ev.shiftKey ? 0.002 : 0.008;
         const newVal = clampStep(startVal.current + dy * range * sensitivity);
-        onChange(newVal);
+        onChangeRef.current(newVal);
       };
       const onUp = () => {
         dragging.current = false;
@@ -103,7 +111,7 @@ export function Knob({
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
-    [value, min, max, onChange, clampStep]
+    [value, min, max, clampStep]
   );
 
   // Fix: attach wheel as non-passive via native addEventListener (React attaches passive by default)
@@ -114,11 +122,11 @@ export function Knob({
       e.preventDefault();
       const dir = e.deltaY < 0 ? 1 : -1;
       const delta = e.shiftKey ? step : step * 5;
-      onChange(clampStep(value + dir * delta));
+      onChangeRef.current(clampStep(value + dir * delta));
     };
     el.addEventListener("wheel", handler, { passive: false });
     return () => el.removeEventListener("wheel", handler);
-  }, [value, step, onChange, clampStep]);
+  }, [value, step, clampStep]);
 
   const onDblClick = useCallback(() => {
     // Reset to center

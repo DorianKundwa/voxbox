@@ -30,7 +30,45 @@ const _callbacks: Record<string, KnobCallback> = {};
 const _listeners: Set<() => void>              = new Set();
 let   _learning:  string | null                = null;
 
-function _notify() { _listeners.forEach(fn => fn()); }
+// ── Store snapshot for useSyncExternalStore ───────────────────────────────
+
+interface MidiState {
+  enabled:  boolean;
+  inputs:   string[];
+  mappings: Record<string, MidiMapping>;
+  learning: string | null;
+}
+
+const SERVER_SNAPSHOT: MidiState = {
+  enabled:  false,
+  inputs:   [],
+  mappings: {},
+  learning: null,
+};
+
+let _cachedSnapshot: MidiState = SERVER_SNAPSHOT;
+
+function _updateSnapshot() {
+  _cachedSnapshot = {
+    enabled:  _enabled,
+    inputs:   _webmidi?.inputs?.map((i: any) => i.name) ?? [],
+    mappings: { ..._mappings },
+    learning: _learning,
+  };
+}
+
+function _notify() {
+  _updateSnapshot();
+  _listeners.forEach(fn => fn());
+}
+
+function _getSnapshot(): MidiState {
+  return _cachedSnapshot;
+}
+
+function _getServerSnapshot(): MidiState {
+  return SERVER_SNAPSHOT;
+}
 
 // ── Init: lazy-load webmidi and start listening ───────────────────────────
 
@@ -89,24 +127,6 @@ function _attachInput(input: any) {
   }
 }
 
-// ── Store snapshot for useSyncExternalStore ───────────────────────────────
-
-interface MidiState {
-  enabled:  boolean;
-  inputs:   string[];
-  mappings: Record<string, MidiMapping>;
-  learning: string | null;
-}
-
-function _getSnapshot(): MidiState {
-  return {
-    enabled:  _enabled,
-    inputs:   _webmidi?.inputs?.map((i: any) => i.name) ?? [],
-    mappings: { ..._mappings },
-    learning: _learning,
-  };
-}
-
 // ── Public hooks ──────────────────────────────────────────────────────────
 
 /** Initialise WebMIDI and expose connection state. */
@@ -114,7 +134,7 @@ export function useWebMidi() {
   const state = useSyncExternalStore(
     (cb) => { _listeners.add(cb); return () => _listeners.delete(cb); },
     _getSnapshot,
-    () => ({ enabled: false, inputs: [], mappings: {}, learning: null } satisfies MidiState)
+    _getServerSnapshot
   );
 
   useEffect(() => { _initWebMidi(); }, []);
@@ -126,7 +146,7 @@ export function useMidiLearn() {
   const state = useSyncExternalStore(
     (cb) => { _listeners.add(cb); return () => _listeners.delete(cb); },
     _getSnapshot,
-    () => ({ enabled: false, inputs: [], mappings: {}, learning: null } satisfies MidiState)
+    _getServerSnapshot
   );
 
   useEffect(() => { _initWebMidi(); }, []);
