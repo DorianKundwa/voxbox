@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { useChainStore } from "@/store/chainStore";
-import { useAnalysisStore } from "@/store/analysisStore";
-import { getAudioEngine } from "@/engine/AudioEngine";
+import { getAudioEngine, audioBufferToWav } from "@/engine/AudioEngine";
 import type { ChainModules } from "@/lib/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
