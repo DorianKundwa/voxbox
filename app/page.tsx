@@ -11,6 +11,7 @@ import { ABMonitor } from "@/components/monitor/ABMonitor";
 import { LUFSMeter } from "@/components/monitor/LUFSMeter";
 import { PitchDisplay } from "@/components/monitor/PitchDisplay";
 import { ExportPanel } from "@/components/export/ExportPanel";
+import { ChainSync } from "@/components/chain/ChainSync";
 import { useAudioStore } from "@/store/audioStore";
 import { useChainStore } from "@/store/chainStore";
 import { useAnalysisStore } from "@/store/analysisStore";
@@ -273,6 +274,8 @@ export default function VoxBoxPage() {
       background: "var(--void-900)",
       backgroundImage: "radial-gradient(ellipse at 15% 10%, rgba(124,58,237,0.10) 0%, transparent 55%), radial-gradient(ellipse at 85% 90%, rgba(6,182,212,0.07) 0%, transparent 55%)",
     }}>
+      {/* Live engine ↔ store sync — no DOM output */}
+      <ChainSync />
       {/* ── Top Nav ────────────────────────────────────────────────────────── */}
       <nav style={{
         position: "sticky", top: 0, zIndex: 50,

@@ -24,6 +24,11 @@ export function ABMonitor() {
   const { modules } = useChainStore();
   const engine = getAudioEngine();
 
+  // Sync loop state to engine whenever it changes — FIX: was purely cosmetic before
+  useEffect(() => {
+    engine.setLoop(isLooping);
+  }, [isLooping]);
+
   // Load audio when file changes
   useEffect(() => {
     const file = monitorMode === "reference" ? referenceFile : dryFile;
