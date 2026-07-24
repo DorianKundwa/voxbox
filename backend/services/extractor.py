@@ -64,7 +64,10 @@ def extract_features(path: str) -> Dict[str, Any]:
     # Frequency balance: energy in bands
     def band_energy(lo, hi):
         mask = (freqs >= lo) & (freqs <= hi)
-        return float(np.mean(stft[mask, :]))
+        if not np.any(mask):
+            idx = np.argmin(np.abs(freqs - (lo + hi) / 2))
+            return float(np.mean(stft_mag[idx, :]))
+        return float(np.mean(stft_mag[mask, :]))
 
     # ISO 31-band 1/3 octave center frequencies (20 Hz to 20 kHz)
     iso_centers = [
@@ -78,7 +81,7 @@ def extract_features(path: str) -> Dict[str, Any]:
         bands_31.append(band_energy(lo, hi))
 
     total_31 = sum(bands_31) + 1e-9
-    bands_31_norm = [round(float(v / total_31), 6) for v in bands_31]
+    bands_31_norm = [0.0 if np.isnan(v) else round(float(v / total_31), 6) for v in bands_31]
 
     freq_balance = {
         "sub_bass": band_energy(20, 80),
@@ -171,7 +174,10 @@ def extract_features(path: str) -> Dict[str, Any]:
         "spectral_rolloff": round(spectral_rolloff, 1),
         "spectral_flux": round(spectral_flux, 6),
         "spectral_bandwidth": round(spectral_bandwidth, 1),
-        "freq_balance": {k: round(v, 4) for k, v in freq_balance.items()},
+        "freq_balance": {
+            k: [round(x, 4) for x in v] if isinstance(v, list) else round(v, 4)
+            for k, v in freq_balance.items()
+        },
         "sibilance": round(sibilance, 4),
         # Pitch
         "pitch_mean": round(pitch_mean, 1),
