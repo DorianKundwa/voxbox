@@ -33,13 +33,21 @@ export function ABMonitor() {
   useEffect(() => {
     const file = monitorMode === "reference" ? referenceFile : dryFile;
     if (!file) return;
-    engine.loadAudio(file).catch(console.error);
-  }, [monitorMode, referenceFile, dryFile]);
+    engine.loadAudio(file).then(() => {
+      if (monitorMode === "processed") {
+        engine.applyChain(modules);
+      } else {
+        engine.bypassChain();
+      }
+    }).catch(console.error);
+  }, [monitorMode, referenceFile, dryFile, modules]);
 
-  // Apply chain when mode is processed
+  // Apply chain when mode is processed, bypass when reference or dry
   useEffect(() => {
     if (monitorMode === "processed") {
       engine.applyChain(modules);
+    } else {
+      engine.bypassChain();
     }
   }, [modules, monitorMode]);
 
@@ -57,7 +65,11 @@ export function ABMonitor() {
         const file = mode === "reference" ? referenceFile : dryFile;
         if (!file) return;
         await engine.loadAudio(file);
-        if (mode === "processed") engine.applyChain(modules);
+        if (mode === "processed") {
+          engine.applyChain(modules);
+        } else {
+          engine.bypassChain();
+        }
         engine.play();
       }, 50);
     }
@@ -71,7 +83,11 @@ export function ABMonitor() {
       const file = monitorMode === "reference" ? referenceFile : dryFile;
       if (!file) return;
       await engine.loadAudio(file);
-      if (monitorMode === "processed") engine.applyChain(modules);
+      if (monitorMode === "processed") {
+        engine.applyChain(modules);
+      } else {
+        engine.bypassChain();
+      }
       engine.play();
       setPlaying(true);
     }

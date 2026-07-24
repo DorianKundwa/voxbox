@@ -461,6 +461,34 @@ export class AudioEngine {
     this._applyLimiter(modules.limiter);
   }
 
+  bypassChain(): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    if (this.gateGain) this.gateGain.gain.setTargetAtTime(1.0, now, 0.01);
+    if (this.deEsserFilter) this.deEsserFilter.gain.setTargetAtTime(0, now, 0.01);
+    if (this.eqFilters) {
+      this.eqFilters.forEach((f, i) => {
+        if (i === 0) f.frequency.setTargetAtTime(20, now, 0.01);
+        else if (i === 4) f.frequency.setTargetAtTime(20000, now, 0.01);
+        else f.gain.setTargetAtTime(0, now, 0.01);
+      });
+    }
+    if (this.compressor) {
+      this.compressor.ratio.setTargetAtTime(1, now, 0.01);
+      this.compressor.threshold.setTargetAtTime(0, now, 0.01);
+    }
+    if (this.compMakeup) this.compMakeup.gain.setTargetAtTime(1.0, now, 0.01);
+    if (this.satWet) this.satWet.gain.setTargetAtTime(0, now, 0.01);
+    if (this.satDry) this.satDry.gain.setTargetAtTime(1.0, now, 0.01);
+    if (this.doublerWet) this.doublerWet.gain.setTargetAtTime(0, now, 0.01);
+    if (this.doublerDry) this.doublerDry.gain.setTargetAtTime(1.0, now, 0.01);
+    if (this.delayWet) this.delayWet.gain.setTargetAtTime(0, now, 0.01);
+    if (this.delayDry) this.delayDry.gain.setTargetAtTime(1.0, now, 0.01);
+    if (this.reverbWet) this.reverbWet.gain.setTargetAtTime(0, now, 0.01);
+    if (this.reverbDry) this.reverbDry.gain.setTargetAtTime(1.0, now, 0.01);
+    if (this.limiterNode) this.limiterNode.threshold.setTargetAtTime(0, now, 0.01);
+  }
+
   // ── Module implementations ────────────────────────────────────────────────
 
   private _applyGate(p: ChainModules["noise_gate"]): void {
