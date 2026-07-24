@@ -257,25 +257,30 @@ def recommend_chain(
         reverb_diff, saturation_diff, pitch_var_dry, mode, dry
     )
 
+    modules_dict = {
+        "noise_gate": noise_gate,
+        "deesser": deesser,
+        "pitch_correction": pitch_correction,
+        "eq": eq,
+        "multiband_comp": multiband_comp,
+        "compressor": compressor,
+        "saturation": saturation,
+        "doubler": doubler,
+        "delay": delay,
+        "reverb": reverb,
+        "limiter": limiter,
+    }
+
+    pedalboard_code = generate_pedalboard_code(modules_dict)
+
     return {
         "mode": mode,
         "match_score": match_score,
         "breakdown": breakdown,
         "reasoning": reasoning,
         "target_spectrum": b31_ref if len(b31_ref) == 31 else [],
-        "modules": {
-            "noise_gate": noise_gate,
-            "deesser": deesser,
-            "pitch_correction": pitch_correction,
-            "eq": eq,
-            "multiband_comp": multiband_comp,
-            "compressor": compressor,
-            "saturation": saturation,
-            "doubler": doubler,
-            "delay": delay,
-            "reverb": reverb,
-            "limiter": limiter,
-        }
+        "pedalboard_code": pedalboard_code,
+        "modules": modules_dict,
     }
 
 
@@ -338,4 +343,52 @@ def _generate_reasoning(
 
 def reverb_decay_note(diff: float) -> str:
     return f"{min(60, int(diff * 100))}% wet decay"
+
+
+def generate_pedalboard_code(modules: Dict[str, Any]) -> str:
+    """Generate executable Spotify Pedalboard Python code for backend studio DSP rendering."""
+    lines = [
+        "from pedalboard import Pedalboard, NoiseGate, HighpassFilter, LowShelfFilter, PeakFilter, HighShelfFilter, Compressor, Chorus, Delay, Reverb, Limiter",
+        "from pedalboard.io import AudioFile",
+        "",
+        "# Spotify Pedalboard Vocal Processing Chain",
+        "board = Pedalboard(["
+    ]
+
+    ng = modules.get("noise_gate", {})
+    if ng.get("enabled"):
+        lines.append(f"    NoiseGate(threshold_db={ng.get('threshold', -50)}, release_ms={ng.get('release', 150)}),")
+
+    comp = modules.get("compressor", {})
+    if comp.get("enabled"):
+        lines.append(f"    Compressor(threshold_db={comp.get('threshold', -18)}, ratio={comp.get('ratio', 3.0)}, attack_ms={comp.get('attack', 8)}, release_ms={comp.get('release', 100)}),")
+
+    eq = modules.get("eq", {})
+    if eq.get("enabled"):
+        for b in eq.get("bands", []):
+            if b.get("enabled") and b.get("gain", 0) != 0:
+                lines.append(f"    PeakFilter(cutoff_frequency_hz={b.get('frequency')}, gain_db={b.get('gain')}, q={b.get('q')}),")
+
+    rev = modules.get("reverb", {})
+    if rev.get("enabled"):
+        lines.append(f"    Reverb(room_size={min(1.0, rev.get('decay', 1.5)/5.0):.2f}, wet_level={rev.get('mix', 20)/100.0:.2f}),")
+
+    lim = modules.get("limiter", {})
+    if lim.get("enabled"):
+        lines.append(f"    Limiter(threshold_db={lim.get('ceiling', -0.3)}),")
+
+    lines.extend([
+        "])",
+        "",
+        "# Process Audio File",
+        "with AudioFile('dry_vocal.wav') as f:",
+        "    audio = f.read(f.frames)",
+        "    sr = f.samplerate",
+        "",
+        "output_audio = board(audio, sr)",
+        "with AudioFile('voxbox_processed.wav', 'w', sr, output_audio.shape[0]) as o:",
+        "    o.write(output_audio)"
+    ])
+
+    return "\n".join(lines)
 
