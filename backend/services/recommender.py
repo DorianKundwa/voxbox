@@ -60,8 +60,8 @@ def recommend_chain(
     adapt_scale = 0.75 if mode == "adapt" else 1.0
 
     # ── 1. Noise Gate ────────────────────────────────────────────────────────
-    # Base threshold on the dry noise floor
     gate_threshold = clamp(noise_floor_dry + 6, -80, -20)
+    gate_threshold = blend(gate_threshold, "gate_threshold", gate_threshold)
     gate_attack = 5.0    # ms
     gate_release = 150.0  # ms
     gate_hold = 50.0      # ms
@@ -77,22 +77,24 @@ def recommend_chain(
     # ── 2. De-Esser ──────────────────────────────────────────────────────────
     sib_ref = ref_val("sibilance", 0.3)
     sib_dry = dry_val("sibilance", 0.3)
-    # If dry has more sibilance than reference, de-ess to match
     sib_excess = (sib_dry - sib_ref) * adapt_scale
     deesser_reduction = clamp(sib_excess * 30, 0, 12)
+    deesser_reduction = blend(deesser_reduction, "deesser_reduction", deesser_reduction)
+    deess_freq = blend(7500, "deesser_freq", 7500)
 
     deesser = {
         "enabled": sib_excess > 0.02,
-        "center_frequency": 7500,
+        "center_frequency": round(deess_freq, 0),
         "bandwidth": 2000,
         "reduction": round(deesser_reduction, 1),
         "sensitivity": round(clamp(sib_dry * 2, 0.1, 1.0), 2),
     }
 
     # ── 3. Pitch Correction ──────────────────────────────────────────────────
-    # If dry has high pitch variance, suggest more correction
     pitch_correction_amount = clamp(pitch_var_dry / 50.0, 0, 1.0) * adapt_scale
-    retune_speed = lerp(100, 20, pitch_correction_amount)  # ms: 100=natural, 20=tight
+    retune_speed = lerp(100, 20, pitch_correction_amount)
+    retune_speed = blend(retune_speed, "pitch_speed", retune_speed)
+    pitch_humanize = blend(lerp(0.8, 0.3, pitch_correction_amount), "pitch_humanize", 0.6)
     key = ref.get("key", "C")
 
     pitch_correction = {
@@ -100,99 +102,43 @@ def recommend_chain(
         "key": key,
         "scale": "major",
         "retune_speed": round(retune_speed, 0),
-        "humanize": round(lerp(0.8, 0.3, pitch_correction_amount), 2),
+        "humanize": round(clamp(pitch_humanize, 0.1, 0.9), 2),
         "amount": round(pitch_correction_amount, 2),
     }
 
     # ── 4. Parametric EQ ─────────────────────────────────────────────────────
-    # Map freq_balance deltas to EQ gains
     sub_diff = (freq_ref.get("sub_bass", 0.05) - freq_dry.get("sub_bass", 0.05)) * 200
     bass_diff = (freq_ref.get("bass", 0.1) - freq_dry.get("bass", 0.1)) * 150
     low_mid_diff = (freq_ref.get("low_mid", 0.15) - freq_dry.get("low_mid", 0.15)) * 120
     high_mid_diff = (freq_ref.get("high_mid", 0.2) - freq_dry.get("high_mid", 0.2)) * 100
     air_diff = (freq_ref.get("air", 0.05) - freq_dry.get("air", 0.05)) * 200
-
-    # Centroid-based high shelf adjustment
     centroid_gain = clamp(centroid_diff / 500.0 * 6.0 * adapt_scale, -12, 12)
+
+    bass_gain = blend(clamp(bass_diff * adapt_scale, -12, 12), "eq_bass", 0.0)
+    low_mid_gain = blend(clamp(low_mid_diff * adapt_scale, -12, 12), "eq_low_mid", 0.0)
+    high_mid_gain = blend(clamp(high_mid_diff * adapt_scale, -12, 12), "eq_high_mid", 0.0)
+    high_shelf_gain = blend(clamp((air_diff + centroid_gain) * adapt_scale, -12, 12), "eq_high_shelf", 0.0)
 
     eq = {
         "enabled": True,
         "bands": [
-            {
-                "id": "low_cut",
-                "type": "highpass",
-                "frequency": 80,
-                "gain": 0,
-                "q": 0.707,
-                "enabled": True,
-            },
-            {
-                "id": "low",
-                "type": "lowshelf",
-                "frequency": 200,
-                "gain": round(clamp(bass_diff * adapt_scale, -12, 12), 1),
-                "q": 0.707,
-                "enabled": True,
-            },
-            {
-                "id": "low_mid",
-                "type": "peaking",
-                "frequency": 800,
-                "gain": round(clamp(low_mid_diff * adapt_scale, -12, 12), 1),
-                "q": 1.0,
-                "enabled": True,
-            },
-            {
-                "id": "high_mid",
-                "type": "peaking",
-                "frequency": 3500,
-                "gain": round(clamp(high_mid_diff * adapt_scale, -12, 12), 1),
-                "q": 1.2,
-                "enabled": True,
-            },
-            {
-                "id": "high_shelf",
-                "type": "highshelf",
-                "frequency": 10000,
-                "gain": round(clamp((air_diff + centroid_gain) * adapt_scale, -12, 12), 1),
-                "q": 0.707,
-                "enabled": True,
-            },
+            { "id": "low_cut", "type": "highpass", "frequency": 80, "gain": 0, "q": 0.707, "enabled": True },
+            { "id": "low", "type": "lowshelf", "frequency": 200, "gain": round(bass_gain, 1), "q": 0.707, "enabled": True },
+            { "id": "low_mid", "type": "peaking", "frequency": 800, "gain": round(low_mid_gain, 1), "q": 1.0, "enabled": True },
+            { "id": "high_mid", "type": "peaking", "frequency": 3500, "gain": round(high_mid_gain, 1), "q": 1.2, "enabled": True },
+            { "id": "high_shelf", "type": "highshelf", "frequency": 10000, "gain": round(high_shelf_gain, 1), "q": 0.707, "enabled": True },
         ]
     }
 
     # ── 5. Multiband Compressor ───────────────────────────────────────────────
-    # Apply more compression if reference has less dynamic range
-    mb_low_ratio = clamp(1.5 + (-dynamic_diff / 6) * 2, 1.2, 4.0) if dynamic_diff < 0 else 1.5
     mb_mid_ratio = clamp(2.0 + (-dynamic_diff / 6) * 3, 1.5, 6.0) if dynamic_diff < 0 else 2.0
-    mb_high_ratio = clamp(1.8 + (-dynamic_diff / 6) * 2, 1.2, 4.0) if dynamic_diff < 0 else 1.8
+    mb_mid_ratio = blend(mb_mid_ratio, "mb_mid_ratio", mb_mid_ratio)
 
     multiband_comp = {
         "enabled": abs(dynamic_diff) > 2,
-        "low": {
-            "crossover": 250,
-            "threshold": -24,
-            "ratio": round(mb_low_ratio * adapt_scale + 1 * (1 - adapt_scale), 2),
-            "attack": 10,
-            "release": 80,
-            "makeup": 2,
-        },
-        "mid": {
-            "crossover": 3000,
-            "threshold": -20,
-            "ratio": round(mb_mid_ratio * adapt_scale + 1 * (1 - adapt_scale), 2),
-            "attack": 5,
-            "release": 50,
-            "makeup": 3,
-        },
-        "high": {
-            "crossover_low": 3000,
-            "threshold": -22,
-            "ratio": round(mb_high_ratio * adapt_scale + 1 * (1 - adapt_scale), 2),
-            "attack": 3,
-            "release": 40,
-            "makeup": 2,
-        }
+        "low": { "crossover": 250, "threshold": -24, "ratio": round(mb_mid_ratio * 0.8, 2), "attack": 10, "release": 80, "makeup": 2 },
+        "mid": { "crossover": 3000, "threshold": -20, "ratio": round(mb_mid_ratio, 2), "attack": 5, "release": 50, "makeup": 3 },
+        "high": { "crossover_low": 3000, "threshold": -22, "ratio": round(mb_mid_ratio * 0.9, 2), "attack": 3, "release": 40, "makeup": 2 }
     }
 
     # ── 6. Vocal Compressor ──────────────────────────────────────────────────
@@ -200,63 +146,70 @@ def recommend_chain(
     comp_threshold = clamp(-18 + lufs_diff * 0.5, -40, -6)
     comp_makeup = clamp(-lufs_diff * 0.4, 0, 12)
 
+    comp_threshold = blend(comp_threshold, "comp_threshold", comp_threshold)
+    comp_ratio = blend(comp_ratio, "comp_ratio", comp_ratio)
+    comp_makeup = blend(comp_makeup, "comp_makeup", comp_makeup)
+
     compressor = {
         "enabled": True,
-        "threshold": round(comp_threshold * adapt_scale - 18 * (1 - adapt_scale), 1),
-        "ratio": round(comp_ratio * adapt_scale + 2.0 * (1 - adapt_scale), 2),
+        "threshold": round(clamp(comp_threshold, -40, -6), 1),
+        "ratio": round(clamp(comp_ratio, 1.2, 10.0), 2),
         "attack": 8,
         "release": 100,
-        "makeup": round(clamp(comp_makeup * adapt_scale, 0, 12), 1),
+        "makeup": round(clamp(comp_makeup, 0, 12), 1),
         "knee": 3,
     }
 
     # ── 7. Saturation ────────────────────────────────────────────────────────
     sat_excess = saturation_diff * adapt_scale
     sat_drive = clamp(sat_excess * 20 + 10, 0, 50)
-    sat_modes = ["tube", "tape", "warm", "soft_clip"]
-    # Pick mode based on harmonic content
+    sat_drive = blend(sat_drive, "sat_drive", sat_drive)
+    sat_mix = blend(clamp(sat_excess * 60 + 20, 10, 80), "sat_mix", 30)
+
     sat_mode = "tube" if harmonic_diff > 0 else "tape" if sat_drive > 20 else "warm"
 
     saturation = {
         "enabled": saturation_diff > 0.05,
         "mode": sat_mode,
-        "drive": round(sat_drive, 1),
+        "drive": round(clamp(sat_drive, 0, 50), 1),
         "tone": 50,
-        "mix": round(clamp(sat_excess * 60 + 20, 10, 80), 1),
+        "mix": round(clamp(sat_mix, 5, 90), 1),
     }
 
     # ── 8. Stereo Doubler ────────────────────────────────────────────────────
     width_ref = ref_val("stereo_width", 0.3)
     width_dry = dry_val("stereo_width", 0.0)
     width_diff = width_ref - width_dry
+    doubler_width = blend(clamp(0.3 + width_diff * adapt_scale, 0, 1.0), "doubler_width", 0.4)
 
     doubler = {
         "enabled": width_diff > 0.1,
-        "width": round(clamp(0.3 + width_diff * adapt_scale, 0, 1.0), 2),
-        "micro_delay": 12,  # ms
-        "detune": 8,        # cents
+        "width": round(clamp(doubler_width, 0.0, 1.0), 2),
+        "micro_delay": 12,
+        "detune": 8,
         "mix": round(clamp(width_diff * 80 * adapt_scale, 10, 70), 1),
     }
 
     # ── 9. Delay ─────────────────────────────────────────────────────────────
     bpm = ref_val("bpm", 120)
     quarter_note_ms = (60000 / bpm) if bpm > 0 else 500
+    delay_mix = blend(clamp(reverb_diff * 15 + 8, 5, 25), "delay_mix", 15)
 
     delay = {
         "enabled": True,
-        "time_ms": round(quarter_note_ms / 2, 1),  # 1/8 note
+        "time_ms": round(quarter_note_ms / 2, 1),
         "sync": "1/8",
         "feedback": 20,
         "damping": 60,
-        "mix": round(clamp(reverb_diff * 15 + 8, 5, 25), 1),
+        "mix": round(clamp(delay_mix, 5, 50), 1),
     }
 
     # ── 10. Reverb ───────────────────────────────────────────────────────────
     reverb_ref = ref_val("reverb_tail", 0.2)
     reverb_mix = clamp(reverb_ref * 35 * adapt_scale, 5, 40)
+    reverb_mix = blend(reverb_mix, "reverb_mix", reverb_mix)
     reverb_decay = clamp(reverb_ref * 4.0, 0.4, 6.0)
-    reverb_type_score = reverb_ref
-    reverb_type = "hall" if reverb_type_score > 0.5 else "plate" if reverb_type_score > 0.25 else "room"
+    reverb_type = "hall" if reverb_ref > 0.5 else "plate" if reverb_ref > 0.25 else "room"
 
     reverb = {
         "enabled": True,
@@ -264,7 +217,7 @@ def recommend_chain(
         "predelay": round(clamp(20 + reverb_ref * 40, 0, 100), 1),
         "decay": round(reverb_decay, 2),
         "damping": 60,
-        "mix": round(reverb_mix, 1),
+        "mix": round(clamp(reverb_mix, 5, 60), 1),
     }
 
     # ── 11. Limiter ──────────────────────────────────────────────────────────
